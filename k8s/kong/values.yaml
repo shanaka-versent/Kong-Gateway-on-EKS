@@ -1,0 +1,72 @@
+# Kong Ingress Controller Helm Values
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# This values file configures Kong Gateway with Gateway API support.
+
+# Enable Gateway API support
+gateway:
+  enabled: true
+
+# Kong Ingress Controller configuration
+ingressController:
+  enabled: true
+  installCRDs: false  # We install Gateway API CRDs separately
+
+  # Enable Gateway API support
+  env:
+    feature_gates: "GatewayAlpha=true"
+
+# Kong Gateway (Data Plane) configuration
+proxy:
+  enabled: true
+  type: LoadBalancer
+
+  # AWS NLB annotations for internal load balancer
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-path: "/healthz/ready"
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-protocol: "HTTP"
+
+  http:
+    enabled: true
+    containerPort: 8000
+    servicePort: 80
+
+  tls:
+    enabled: false
+
+# Admin API (disabled for production)
+admin:
+  enabled: false
+
+# Status endpoint for health checks
+status:
+  enabled: true
+  http:
+    enabled: true
+    containerPort: 8100
+
+# Resource limits
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Tolerations for system node pool
+tolerations:
+  - key: "CriticalAddonsOnly"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+# Pod anti-affinity for HA
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Replica count
+replicaCount: 2

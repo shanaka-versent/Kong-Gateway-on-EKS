@@ -1,0 +1,90 @@
+# ArgoCD App: Kong Gateway
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# LAYER 3: K8s Customizations
+# Sync Wave: 1 (after Gateway API CRDs)
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kong-gateway
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://charts.konghq.com
+    chart: kong
+    targetRevision: 2.38.0
+    helm:
+      valueFiles: []
+      values: |
+        # Enable Gateway API support
+        gateway:
+          enabled: true
+
+        # Kong Ingress Controller
+        ingressController:
+          enabled: true
+          installCRDs: true
+          env:
+            feature_gates: "GatewayAlpha=true"
+
+        # Kong Gateway (Data Plane)
+        proxy:
+          enabled: true
+          type: LoadBalancer
+          annotations:
+            service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+            service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
+            service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+            service.beta.kubernetes.io/aws-load-balancer-healthcheck-path: "/healthz/ready"
+          http:
+            enabled: true
+            containerPort: 8000
+            servicePort: 80
+          tls:
+            enabled: false
+
+        # Admin API (disabled)
+        admin:
+          enabled: false
+
+        # Status endpoint
+        status:
+          enabled: true
+          http:
+            enabled: true
+
+        # Resources
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+
+        # Tolerations for system nodes
+        tolerations:
+          - key: "CriticalAddonsOnly"
+            operator: "Exists"
+            effect: "NoSchedule"
+
+        # Replicas
+        replicaCount: 2
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kong
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,40 @@
+# Sample App 2 HTTPRoute
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# Routes /app2/* paths to the sample-app-2 service.
+# No Kong plugins applied - clean pass-through.
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: app2-route
+  namespace: tenant-app2
+  # No konghq.com/plugins annotation = clean pass-through
+spec:
+  parentRefs:
+    - name: kong-gateway
+      namespace: kong
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /app2
+      backendRefs:
+        - name: sample-app-2
+          port: 8080
+
+---
+# ReferenceGrant allows Kong Gateway to route to services in tenant-app2 namespace
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-kong-gateway
+  namespace: tenant-app2
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: tenant-app2
+  to:
+    - group: ""
+      kind: Service

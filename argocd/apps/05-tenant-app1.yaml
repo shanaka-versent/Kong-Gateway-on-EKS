@@ -1,0 +1,34 @@
+# ArgoCD App: Tenant App 1
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# LAYER 4: Applications
+# Sync Wave: 4 (after health responder)
+# Deploys sample-app-1 on path /app1
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tenant-app1
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/shanaka-versent/EKS-Kong-GatewayAPI-Demo.git
+    targetRevision: HEAD
+    path: k8s/apps/tenant-app1
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: tenant-app1
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

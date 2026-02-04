@@ -1,0 +1,9 @@
+# Kong Gateway Namespace
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kong
+  labels:
+    app.kubernetes.io/name: kong
+    app.kubernetes.io/part-of: kong-gateway

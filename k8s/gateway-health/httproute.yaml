@@ -1,0 +1,39 @@
+# Health Probe HTTPRoute
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# Routes /healthz/* paths to the health-responder service.
+# This is critical for ALB health checks to succeed.
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: health-route
+  namespace: gateway-health
+spec:
+  parentRefs:
+    - name: kong-gateway
+      namespace: kong
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /healthz
+      backendRefs:
+        - name: health-responder
+          port: 8080
+
+---
+# ReferenceGrant allows Kong Gateway to route to services in gateway-health namespace
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-kong-gateway
+  namespace: gateway-health
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: gateway-health
+  to:
+    - group: ""
+      kind: Service

@@ -1,0 +1,34 @@
+# ArgoCD App: Gateway Health
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# LAYER 3: K8s Customizations
+# Sync Wave: 3 (after Gateway is configured)
+# Deploys health-responder for ALB health probes
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gateway-health
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/shanaka-versent/EKS-Kong-GatewayAPI-Demo.git
+    targetRevision: HEAD
+    path: k8s/gateway-health
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gateway-health
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

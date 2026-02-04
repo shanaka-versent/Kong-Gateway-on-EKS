@@ -1,0 +1,18 @@
+# Sample App 2 Service
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-app-2
+  namespace: tenant-app2
+  labels:
+    app: sample-app-2
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+  selector:
+    app: sample-app-2

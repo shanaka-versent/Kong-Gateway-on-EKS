@@ -1,0 +1,31 @@
+# ArgoCD Root Application (App of Apps Pattern)
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# This root application manages all other ArgoCD applications.
+# Apply this after Terraform deployment to bootstrap the cluster.
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kong-gateway-root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/shanaka-versent/EKS-Kong-GatewayAPI-Demo.git
+    targetRevision: HEAD
+    path: argocd/apps
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
