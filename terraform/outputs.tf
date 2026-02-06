@@ -34,3 +34,51 @@ output "argocd_port_forward_command" {
   description = "Command to access ArgoCD UI"
   value       = "kubectl port-forward svc/argocd-server -n argocd 8080:443"
 }
+
+# ==============================================================================
+# LB CONTROLLER OUTPUTS
+# ==============================================================================
+
+output "lb_controller_role_arn" {
+  description = "AWS Load Balancer Controller IAM role ARN"
+  value       = module.iam.lb_controller_role_arn
+}
+
+# ==============================================================================
+# CLOUDFRONT + NLB OUTPUTS (only when enable_cloudfront = true)
+# ==============================================================================
+
+output "nlb_dns_name" {
+  description = "Internal NLB DNS name"
+  value       = var.enable_cloudfront ? module.nlb[0].nlb_dns_name : null
+}
+
+output "nlb_target_group_arn" {
+  description = "NLB target group ARN (used by TargetGroupBinding)"
+  value       = var.enable_cloudfront ? module.nlb[0].target_group_arn : null
+}
+
+output "cloudfront_distribution_id" {
+  description = "CloudFront distribution ID"
+  value       = var.enable_cloudfront ? module.cloudfront[0].distribution_id : null
+}
+
+output "cloudfront_domain_name" {
+  description = "CloudFront distribution domain name"
+  value       = var.enable_cloudfront ? module.cloudfront[0].distribution_domain_name : null
+}
+
+output "cloudfront_url" {
+  description = "CloudFront distribution URL"
+  value       = var.enable_cloudfront ? "https://${module.cloudfront[0].distribution_domain_name}" : null
+}
+
+output "waf_web_acl_arn" {
+  description = "WAF Web ACL ARN"
+  value       = var.enable_cloudfront ? module.cloudfront[0].waf_web_acl_arn : null
+}
+
+output "application_url" {
+  description = "Application URL (CloudFront if enabled, otherwise direct NLB)"
+  value       = var.enable_cloudfront ? "https://${module.cloudfront[0].distribution_domain_name}" : "Use: kubectl get svc -n kong kong-kong-proxy"
+}

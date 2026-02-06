@@ -115,15 +115,48 @@ variable "enable_logging" {
   default     = false
 }
 
-# TLS Configuration
-variable "enable_https" {
-  description = "Enable HTTPS on ALB"
+# ==============================================================================
+# CLOUDFRONT + WAF + VPC ORIGIN CONFIGURATION
+# ==============================================================================
+
+variable "enable_cloudfront" {
+  description = "Enable CloudFront + WAF + VPC Origin edge layer for private connectivity to Kong Gateway"
   type        = bool
   default     = false
 }
 
-variable "acm_certificate_arn" {
-  description = "ACM certificate ARN for ALB HTTPS listener"
+variable "enable_waf" {
+  description = "Enable WAF Web ACL on CloudFront (requires enable_cloudfront = true)"
+  type        = bool
+  default     = true
+}
+
+variable "enable_waf_rate_limiting" {
+  description = "Enable rate limiting rule in WAF"
+  type        = bool
+  default     = true
+}
+
+variable "waf_rate_limit" {
+  description = "WAF rate limit threshold (requests per 5 minutes per IP)"
+  type        = number
+  default     = 2000
+}
+
+variable "cloudfront_price_class" {
+  description = "CloudFront price class (PriceClass_100 = US/Canada/Europe)"
+  type        = string
+  default     = "PriceClass_100"
+}
+
+variable "cloudfront_certificate_arn" {
+  description = "ACM certificate ARN for CloudFront custom domain (must be in us-east-1)"
+  type        = string
+  default     = ""
+}
+
+variable "cloudfront_custom_domain" {
+  description = "Custom domain for CloudFront distribution"
   type        = string
   default     = ""
 }

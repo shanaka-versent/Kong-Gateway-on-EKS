@@ -57,15 +57,11 @@ spec:
           - konnect-cluster-cert
 
         # Kong Gateway (Data Plane)
+        # NLB is Terraform-managed for CloudFront VPC Origin integration
+        # Kong pods registered via TargetGroupBinding CRD (AWS LB Controller)
         proxy:
           enabled: true
-          type: LoadBalancer
-          annotations:
-            service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
-            service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
-            service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
-            service.beta.kubernetes.io/aws-load-balancer-healthcheck-path: "/healthz/ready"
-            service.beta.kubernetes.io/aws-load-balancer-healthcheck-protocol: "HTTP"
+          type: ClusterIP  # NLB is Terraform-managed, not auto-created
           http:
             enabled: true
             containerPort: 8000

@@ -8,20 +8,25 @@
 #
 # Layer 2: Base EKS Cluster Setup (Terraform)
 #   - EKS Cluster, Node Groups, OIDC Provider
-#   - IAM Roles (Cluster, Node, LB Controller)
+#   - IAM Roles (Cluster, Node, LB Controller IRSA)
+#   - AWS Load Balancer Controller (for TargetGroupBinding CRD)
+#   - Internal NLB (Terraform-managed, for CloudFront VPC Origin)
+#   - CloudFront Distribution + WAF + VPC Origin (optional)
 #   - ArgoCD Installation
-#   - AWS Load Balancer Controller
-#   - ALB (External Load Balancer)
 #
 # Layer 3: EKS Customizations (ArgoCD)
 #   - Gateway API CRDs
-#   - Kong Gateway + Ingress Controller
-#   - Gateway and HTTPRoutes
+#   - Kong Gateway (ClusterIP, registered via TargetGroupBinding)
+#   - Gateway and HTTPRoutes (K8s Gateway API)
 #
 # Layer 4: Application Deployment (ArgoCD)
 #   - Sample Applications (app1, app2)
 #   - Users API with Kong Plugins
 #   - Health Responder
+#
+# Traffic Flow (with CloudFront enabled):
+# Internet --> CloudFront (WAF) --> VPC Origin (AWS backbone/PrivateLink)
+#          --> Internal NLB --> Kong Gateway Pods --> Backend Services
 
 locals {
   name_prefix  = "${var.project_name}-${var.environment}"
@@ -81,6 +86,158 @@ module "eks" {
 
   tags = var.tags
 }
+
+# IAM Module - AWS Load Balancer Controller IRSA role
+module "iam" {
+  source = "./modules/iam"
+
+  name_prefix       = local.name_prefix
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  oidc_provider_url = module.eks.oidc_provider_url
+  tags              = var.tags
+}
+
+# AWS Load Balancer Controller - Provides TargetGroupBinding CRD
+# Used to register Kong Gateway pods with the Terraform-managed NLB target group
+module "lb_controller" {
+  source = "./modules/lb-controller"
+
+  cluster_name       = module.eks.cluster_name
+  iam_role_arn       = module.iam.lb_controller_role_arn
+  region             = var.region
+  vpc_id             = module.vpc.vpc_id
+  cluster_dependency = module.eks.cluster_name
+}
+
+# Wait for LB Controller to be ready and CRDs to be registered
+resource "time_sleep" "wait_for_lb_controller" {
+  depends_on      = [module.lb_controller]
+  create_duration = "30s"
+}
+
+# ==============================================================================
+# CLOUDFRONT EDGE LAYER (optional - gated behind enable_cloudfront)
+# Creates: Internal NLB + CloudFront VPC Origin + WAF
+# ==============================================================================
+
+# Internal NLB for Kong Gateway (Terraform-managed for CloudFront VPC Origin)
+# The NLB is internal with security groups allowing only CloudFront VPC Origin traffic
+module "nlb" {
+  count  = var.enable_cloudfront ? 1 : 0
+  source = "./modules/nlb"
+
+  name_prefix        = local.name_prefix
+  vpc_id             = module.vpc.vpc_id
+  vpc_cidr           = var.vpc_cidr
+  private_subnet_ids = module.vpc.private_subnet_ids
+  health_check_path  = "/healthz/ready"
+  health_check_port  = 8100
+  tags               = var.tags
+}
+
+# CloudFront Distribution with WAF + VPC Origin to Internal NLB
+# VPC Origin provides end-to-end private connectivity via AWS backbone
+module "cloudfront" {
+  count  = var.enable_cloudfront ? 1 : 0
+  source = "./modules/cloudfront"
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  name_prefix  = local.name_prefix
+  nlb_arn      = module.nlb[0].nlb_arn
+  nlb_dns_name = module.nlb[0].nlb_dns_name
+
+  # WAF Configuration
+  enable_waf           = var.enable_waf
+  enable_rate_limiting = var.enable_waf_rate_limiting
+  rate_limit           = var.waf_rate_limit
+
+  # TLS Configuration
+  acm_certificate_arn = var.cloudfront_certificate_arn
+  custom_domain       = var.cloudfront_custom_domain
+  price_class         = var.cloudfront_price_class
+
+  tags = var.tags
+}
+
+# ==============================================================================
+# TARGET GROUP BINDING
+# Registers Kong Gateway pods with the Terraform-managed NLB target group
+# The TargetGroupBinding CRD is provided by the AWS Load Balancer Controller
+# ==============================================================================
+
+# Pre-create kong namespace so TargetGroupBinding can be applied before ArgoCD
+resource "kubernetes_namespace" "kong" {
+  count = var.enable_cloudfront ? 1 : 0
+
+  metadata {
+    name = "kong"
+    labels = {
+      "app.kubernetes.io/name"    = "kong"
+      "app.kubernetes.io/part-of" = "kong-gateway"
+    }
+  }
+
+  depends_on = [module.eks]
+}
+
+# TargetGroupBinding: Binds Kong ClusterIP service to Terraform-managed NLB target group
+# The LB Controller reconciler automatically registers/deregisters Kong pod IPs
+resource "kubernetes_manifest" "target_group_binding" {
+  count = var.enable_cloudfront ? 1 : 0
+
+  manifest = {
+    apiVersion = "elbv2.k8s.aws/v1beta1"
+    kind       = "TargetGroupBinding"
+    metadata = {
+      name      = "kong-nlb-binding"
+      namespace = "kong"
+      labels = {
+        "app.kubernetes.io/name"      = "kong"
+        "app.kubernetes.io/component" = "target-group-binding"
+      }
+    }
+    spec = {
+      targetGroupARN = module.nlb[0].target_group_arn
+      targetType     = "ip"
+      serviceRef = {
+        name = "kong-kong-proxy" # Kong Helm chart proxy service name
+        port = 80
+      }
+      networking = {
+        ingress = [{
+          from = [{
+            securityGroup = {
+              groupID = module.nlb[0].security_group_id
+            }
+          }]
+          ports = [
+            {
+              port     = 8000 # Kong proxy container port
+              protocol = "TCP"
+            },
+            {
+              port     = 8100 # Kong status/health port
+              protocol = "TCP"
+            }
+          ]
+        }]
+      }
+    }
+  }
+
+  depends_on = [
+    time_sleep.wait_for_lb_controller,
+    kubernetes_namespace.kong
+  ]
+}
+
+# ==============================================================================
+# ARGOCD - GITOPS CONTINUOUS DELIVERY
+# ==============================================================================
 
 # ArgoCD - GitOps continuous delivery
 module "argocd" {

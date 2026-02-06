@@ -7,7 +7,7 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = ">= 5.82"  # Required for aws_cloudfront_vpc_origin resource
     }
     tls = {
       source  = "hashicorp/tls"
@@ -30,6 +30,17 @@ terraform {
 
 provider "aws" {
   region = var.region
+
+  default_tags {
+    tags = var.tags
+  }
+}
+
+# US-East-1 provider required for CloudFront WAF Web ACL
+# WAF for CloudFront scope must be created in us-east-1
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
 
   default_tags {
     tags = var.tags

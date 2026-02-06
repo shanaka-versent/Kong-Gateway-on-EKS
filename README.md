@@ -38,14 +38,21 @@ flowchart TB
         Client[Client]
     end
 
-    subgraph AWS["AWS Cloud"]
-        ALB["Application Load Balancer<br>(Internet-facing, L7)"]
+    subgraph Edge["CloudFront Edge Layer"]
+        CF["CloudFront Distribution"]
+        WAF["AWS WAF<br>(SQLi, XSS, Rate Limit)"]
+    end
 
-        NLB["Internal NLB<br>(L4)"]
+    subgraph AWS["AWS Cloud - VPC (Private Subnets Only)"]
+        VPCOrigin["VPC Origin<br>(AWS Backbone/PrivateLink)"]
+
+        NLB["Internal NLB<br>(Terraform-managed, L4)"]
 
         subgraph EKS["EKS Cluster"]
+            TGB["TargetGroupBinding<br>(LB Controller CRD)"]
+
             subgraph KongNS["kong namespace"]
-                Kong["Kong Gateway Pods"]
+                Kong["Kong Gateway Pods<br>(ClusterIP)"]
             end
 
             subgraph Plugins["Kong Plugins"]
@@ -76,9 +83,12 @@ flowchart TB
         Catalog["Service Catalog"]
     end
 
-    Client --> ALB
-    ALB --> NLB
-    NLB --> Kong
+    Client --> CF
+    CF --> WAF
+    WAF --> VPCOrigin
+    VPCOrigin -->|"Private connectivity<br>(no internet)"| NLB
+    NLB --> TGB
+    TGB -->|"Pod IP registration"| Kong
     Kong --> Plugins
     Kong --> Routes
     R1 --> App1
@@ -90,12 +100,16 @@ flowchart TB
 
 | Component | Purpose |
 |-----------|---------|
-| AWS ALB | Public entry point (Internet-facing, Layer 7) |
-| Internal NLB | Connects ALB to EKS cluster (Layer 4) |
-| Kong Gateway | Kubernetes Gateway API implementation |
+| CloudFront + WAF | Edge security (DDoS, SQLi, XSS, rate limiting), TLS termination |
+| VPC Origin | Private connectivity from CloudFront to VPC via AWS backbone (PrivateLink) |
+| Internal NLB | Terraform-managed L4 load balancer in private subnets (no public IP) |
+| TargetGroupBinding | CRD that registers Kong pod IPs with NLB target group |
+| Kong Gateway | Kubernetes Gateway API implementation with API management plugins |
 | KongPlugins | Authentication, rate limiting, transformation |
-| HTTPRoutes | Per-namespace routing rules for tenants |
-| Kong Konnect | Analytics, developer portal, management UI |
+| HTTPRoutes | Per-namespace routing rules for tenants (K8s Gateway API) |
+| Kong Konnect | Analytics, developer portal, management UI (SaaS) |
+
+**Key security property:** The NLB has no public endpoint. CloudFront VPC Origin connects via AWS-managed ENIs in private subnets. **It is impossible to bypass CloudFront.**
 
 ## Architecture Layers
 
@@ -109,12 +123,14 @@ flowchart TB
         RTables["Route Tables"]
     end
 
-    subgraph L2["Layer 2: Kubernetes Platform"]
+    subgraph L2["Layer 2: Kubernetes Platform + Edge"]
         direction LR
         EKS["EKS Cluster"]
         Nodes["Node Groups"]
         IAM["IAM Roles"]
         LBC["LB Controller"]
+        NLB["Internal NLB"]
+        CF["CloudFront + WAF"]
         ArgoCD["ArgoCD"]
     end
 
@@ -142,26 +158,32 @@ flowchart TB
 | Layer | Tool | What It Creates |
 |-------|------|-----------------|
 | **Layer 1** | Terraform | VPC, Subnets (Public/Private), NAT/IGW, Route Tables |
-| **Layer 2** | Terraform | EKS, Node Groups (System/User), IAM, ArgoCD, LB Controller |
-| **Layer 3** | ArgoCD | Gateway API CRDs, Kong Gateway, Gateway, HTTPRoutes |
+| **Layer 2** | Terraform | EKS, Node Groups, IAM (IRSA), LB Controller, Internal NLB, CloudFront + WAF + VPC Origin, ArgoCD |
+| **Layer 3** | ArgoCD | Gateway API CRDs, Kong Gateway (ClusterIP), Gateway, HTTPRoutes |
 | **Layer 4** | ArgoCD | Applications (app1, app2, users-api, health-responder) |
 
 ## EKS Cluster Architecture
 
 ```mermaid
 flowchart TB
+    subgraph Edge["CloudFront Edge"]
+        CF["CloudFront + WAF"]
+    end
+
     subgraph AWS["AWS Cloud"]
         subgraph VPC["VPC"]
             subgraph PubSub["Public Subnets"]
-                ALB["Application<br>Load Balancer"]
                 NAT["NAT Gateway"]
             end
 
             subgraph PrivSub["Private Subnets"]
+                VPCOrigin["CloudFront VPC Origin ENIs"]
+                NLB["Internal NLB<br>(Terraform-managed)"]
+
                 subgraph EKS["EKS Cluster"]
                     subgraph SysNodes["System Node Pool"]
                         ArgoCD["ArgoCD"]
-                        Kong["Kong Gateway"]
+                        Kong["Kong Gateway<br>(ClusterIP)"]
                         LBC["LB Controller"]
                     end
 
@@ -171,14 +193,13 @@ flowchart TB
                         API["Users API"]
                     end
                 end
-
-                NLB["Internal NLB"]
             end
         end
     end
 
-    ALB --> NLB
-    NLB --> Kong
+    CF -->|"VPC Origin<br>(AWS backbone)"| VPCOrigin
+    VPCOrigin --> NLB
+    NLB -->|"TargetGroupBinding"| Kong
     Kong --> App1
     Kong --> App2
     Kong --> API
@@ -212,8 +233,15 @@ cd EKS-Kong-GatewayAPI-Demo
 ```bash
 cd terraform
 terraform init
+
+# Deploy without CloudFront (basic setup)
 terraform apply
+
+# OR deploy with CloudFront + WAF + VPC Origin (production-ready)
+terraform apply -var="enable_cloudfront=true"
 ```
+
+> **Note:** When `enable_cloudfront=true`, Terraform creates the Internal NLB, CloudFront VPC Origin, and WAF. The VPC Origin can take 15+ minutes to deploy.
 
 ### Step 3: Configure kubectl
 
@@ -289,20 +317,27 @@ kubectl get applications -n argocd -w
 ### Test Endpoints
 
 ```bash
-# Get Kong Gateway LoadBalancer IP
-KONG_LB=$(kubectl get svc -n kong kong-kong-proxy -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+# When CloudFront is enabled, use the CloudFront URL:
+CF_URL=$(cd terraform && terraform output -raw cloudfront_url)
 
 # Test App 1 (no plugins)
-curl http://${KONG_LB}/app1
+curl ${CF_URL}/app1
 
 # Test App 2 (no plugins)
-curl http://${KONG_LB}/app2
+curl ${CF_URL}/app2
 
 # Test Users API (with rate limiting)
-curl http://${KONG_LB}/api/users
+curl ${CF_URL}/api/users
 
 # Test health endpoint
-curl http://${KONG_LB}/healthz/ready
+curl ${CF_URL}/healthz/ready
+
+# Verify NLB target health (Kong pods should be healthy)
+TG_ARN=$(cd terraform && terraform output -raw nlb_target_group_arn)
+aws elbv2 describe-target-health --target-group-arn ${TG_ARN}
+
+# Verify TargetGroupBinding
+kubectl get targetgroupbindings -n kong
 ```
 
 ### Access ArgoCD UI
@@ -396,12 +431,11 @@ plugin: cors
 
 ## Critical Fix: Health Probes
 
-Same as the Istio implementation, ALB health probes require explicit HTTPRoute configuration:
+NLB health probes require explicit HTTPRoute configuration. The NLB target group health check hits Kong pods on port 8100 (`/healthz/ready`), which is the Kong status endpoint. Additionally, CloudFront origin health checks route through Kong to the health-responder service:
 
 ```mermaid
 flowchart LR
-    ALB["AWS ALB"]
-    NLB["Internal NLB"]
+    NLB["Internal NLB<br>(Terraform-managed)"]
     Kong["Kong Gateway"]
 
     subgraph Routes["HTTPRoute Matching"]
@@ -411,12 +445,11 @@ flowchart LR
     Health["health-responder<br>Service"]
     Pod["health-responder<br>Pod"]
 
-    ALB -->|"Health Check<br>/healthz/ready"| NLB
-    NLB --> Kong
+    NLB -->|"Health Check<br>/healthz/ready"| Kong
     Kong --> HR
     HR --> Health
     Health --> Pod
-    Pod -->|"200 OK"| ALB
+    Pod -->|"200 OK"| NLB
 ```
 
 ## Cleanup

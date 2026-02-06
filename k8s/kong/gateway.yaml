@@ -1,21 +1,18 @@
 # Kong Gateway Resource
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
-# This Gateway creates an Internal NLB that receives traffic from ALB.
-# The Gateway listens on HTTP (port 80) and routes to backend services.
+# This Gateway routes traffic from the Terraform-managed Internal NLB to backend services.
+# Traffic flow: CloudFront (WAF) --> VPC Origin --> Internal NLB --> Kong Gateway --> Services
+#
+# NOTE: NLB is managed by Terraform (not by LB Controller annotations).
+# Kong pods are registered with the NLB via TargetGroupBinding CRD.
 
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: kong-gateway
   namespace: kong
-  annotations:
-    # AWS Load Balancer Controller annotations for Internal NLB
-    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
-    service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
-    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
-    service.beta.kubernetes.io/aws-load-balancer-healthcheck-path: "/healthz/ready"
-    service.beta.kubernetes.io/aws-load-balancer-healthcheck-protocol: "HTTP"
+  # NOTE: AWS NLB annotations removed - NLB is Terraform-managed for CloudFront VPC Origin
 spec:
   gatewayClassName: kong
   listeners:
