@@ -98,12 +98,12 @@ This adds an extra component to the architecture, separate traffic paths (API vs
 
 ---
 
-## Implementation 1: Kong Gateway (This Repo)
+## Detailed Architecture
 
 Kong Gateway serves as BOTH the API Gateway and the Kubernetes Gateway API implementation. All traffic (web + API) flows through a single path.
 
 ```mermaid
-%%{init: {'theme': 'neutral'}}%%
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '16px'}, 'flowchart': {'nodeSpacing': 50, 'rankSpacing': 80, 'padding': 30}}}%%
 flowchart TB
     Client["Client"]
 
@@ -114,32 +114,44 @@ flowchart TB
     end
 
     subgraph VPC["AWS VPC — Private Subnets Only"]
-        VPCOrigin["VPC Origin"]
-        NLB["Internal NLB"]
+        VPCOrigin["VPC Origin (PrivateLink)"]
+        NLB["Internal NLB (Terraform-managed)"]
 
         subgraph EKS["EKS Cluster"]
             TGB["TargetGroupBinding"]
 
-            subgraph KongNS["Kong Gateway"]
-                direction LR
-                Kong["Kong Pods"]
-                Plugins["Kong Plugins"]
+            subgraph KongNS["kong namespace"]
+                GWClass["GatewayClass: kong"]
+                GW["Gateway: kong-gateway<br/>Listener: HTTP :80"]
+                KIC["Kong Ingress Controller"]
+                KongDP["Kong Gateway Pods (x2)"]
             end
 
-            subgraph Routes["HTTPRoutes"]
-                direction LR
-                R1["/app1"]
-                R2["/app2"]
-                R3["/api/*"]
-                R4["/healthz"]
+            subgraph API["api namespace"]
+                APIRoute["HTTPRoute: users-api-route<br/>/api/users → users-api:8080"]
+                RL["KongPlugin: rate-limiting<br/>100/min per IP"]
+                RT["KongPlugin: request-transformer<br/>Add X-Request-ID, X-Kong-Proxy"]
+                CORS["KongPlugin: cors"]
+                UsersAPI["users-api (nginx)"]
+                RG1["ReferenceGrant"]
             end
 
-            subgraph Apps["Backend Services"]
-                direction LR
-                App1["sample-app-1"]
-                App2["sample-app-2"]
-                API["users-api"]
-                Health["health-responder"]
+            subgraph TA1["tenant-app1 namespace"]
+                App1Route["HTTPRoute: app1-route<br/>/app1 → sample-app-1:8080"]
+                App1["sample-app-1 (nginx)"]
+                RG2["ReferenceGrant"]
+            end
+
+            subgraph TA2["tenant-app2 namespace"]
+                App2Route["HTTPRoute: app2-route<br/>/app2 → sample-app-2:8080"]
+                App2["sample-app-2 (nginx)"]
+                RG3["ReferenceGrant"]
+            end
+
+            subgraph GH["gateway-health namespace"]
+                HealthRoute["HTTPRoute: health-route<br/>/healthz → health-responder:8080"]
+                HealthPod["health-responder (nginx)"]
+                RG4["ReferenceGrant"]
             end
         end
     end
@@ -155,26 +167,46 @@ flowchart TB
     WAF --> VPCOrigin
     VPCOrigin --> NLB
     NLB --> TGB
-    TGB --> Kong
-    Kong --> Plugins
-    Plugins --> R1 & R2 & R3 & R4
-    R1 --> App1
-    R2 --> App2
-    R3 --> API
-    R4 --> Health
-    Kong -.-> Konnect
+    TGB --> KongDP
+
+    GWClass --> KIC
+    GW --> KIC
+    KIC -->|"configures"| KongDP
+
+    KongDP --> APIRoute
+    APIRoute --> RL & RT & CORS
+    RL & RT & CORS --> UsersAPI
+
+    KongDP --> App1Route
+    App1Route --> App1
+
+    KongDP --> App2Route
+    App2Route --> App2
+
+    KongDP --> HealthRoute
+    HealthRoute --> HealthPod
+
+    KongDP -.-> Konnect
+
+    style EKS fill:#f0f0f0
+    style KongNS fill:#ffffff
+    style API fill:#ffffff
+    style TA1 fill:#ffffff
+    style TA2 fill:#ffffff
+    style GH fill:#ffffff
 ```
 
 **Traffic Flow:**
 ```
-Client --> CloudFront + WAF --> VPC Origin --> Internal NLB --> Kong Gateway --> HTTPRoutes --> Backend Services
+Client → CloudFront + WAF → VPC Origin → Internal NLB → Kong Gateway → HTTPRoute → Backend Service
 ```
 
-**Why this pattern:**
-- Kong Gateway handles API management (auth, rate limiting, transforms) AND K8s routing in a single component
-- No need for a separate AWS API Gateway service — Kong replaces it
-- Single traffic path for both web content and APIs
-- Kong Konnect provides analytics, developer portal, and centralized management as SaaS
+**Key Design Decisions:**
+- **Single traffic path** — all requests (web + API) flow through Kong Gateway, no split paths
+- **Namespace isolation** — each tenant and the API have their own namespace with ReferenceGrant for cross-namespace routing
+- **Plugins per-route** — only `/api/users` has rate limiting, request transforms, and CORS; tenant apps are clean pass-through
+- **Terraform-managed NLB** — created before Kong deploys (avoids chicken-and-egg with CloudFront VPC Origin)
+- **Kong Konnect** — telemetry and management via SaaS, no admin API exposed in-cluster
 
 ---
 
