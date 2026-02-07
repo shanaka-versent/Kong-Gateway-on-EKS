@@ -1281,22 +1281,6 @@ AWS WAF and Kong plugins remain **complementary**:
 | **Kong Gateway Enterprise** | The data plane runtime that processes requests and runs plugins. In the managed option, Kong operates this for you | Included in Dedicated Cloud Gateways |
 | **Kong Ingress Controller** | NOT needed — Istio handles K8s Gateway API routing inside the cluster. Kong sits outside | No |
 
-### Side-by-Side: AWS API Gateway vs Kong Konnect
-
-| Aspect | AWS API Gateway | Kong Konnect Dedicated Cloud Gateway |
-|--------|-----------------|--------------------------------------|
-| **Deployment model** | AWS-managed service | Kong-managed service |
-| **Location** | Outside K8s (AWS infrastructure) | Outside K8s (Kong infrastructure) |
-| **Configuration** | AWS Console / CloudFormation / CDK | Kong Konnect UI / decK CLI / Konnect API |
-| **Authentication** | Lambda Authorizers (custom code) | Built-in plugins (JWT, OAuth, OIDC, API keys) — no custom code |
-| **Rate limiting** | Usage Plans (per API key) | KongPlugin (per-route, per-consumer, sliding window) |
-| **Request transforms** | Mapping Templates (VTL) | Request Transformer plugin (declarative) |
-| **Developer portal** | Not built-in | Built-in Kong Dev Portal |
-| **Analytics** | CloudWatch | Kong Konnect Analytics + Prometheus export |
-| **Multi-cloud** | AWS only | Same config works on AWS, Azure, GCP |
-| **Cost model** | Per-request ($3.50/million) + data transfer | Kong Konnect subscription |
-| **Vendor lock-in** | AWS-specific APIs and config | Cloud-agnostic — portable config via decK |
-
 ### When to Use This Pattern
 
 - You want to **replace AWS API Gateway** with a cloud-agnostic managed API gateway that sits in the **same architectural position** (outside the cluster)
