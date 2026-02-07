@@ -32,7 +32,7 @@ data "aws_ec2_managed_prefix_list" "cloudfront" {
 # ==============================================================================
 
 resource "aws_security_group" "nlb" {
-  name        = "sg-nlb-${var.name_prefix}"
+  name        = "nlb-${var.name_prefix}"
   description = "Security group for Internal NLB - allows traffic from CloudFront VPC Origin"
   vpc_id      = var.vpc_id
 
