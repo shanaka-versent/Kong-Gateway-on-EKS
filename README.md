@@ -1,4 +1,4 @@
-# POC - Kong Gateway on AWS EKS: Kubernetes Gateway API with Built-in API Management
+# AWS EKS with Kong Gateway as a K8s Gateway API Implementation with API Management
 
 This POC demonstrates how to implement the Kubernetes Gateway API on AWS EKS using **Kong Gateway Enterprise**, integrated with **Kong Konnect** for centralized API management, analytics, and developer portal.
 
