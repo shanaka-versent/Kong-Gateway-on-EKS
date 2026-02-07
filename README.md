@@ -169,6 +169,44 @@ Client --> CloudFront + WAF --> VPC Origin --> Internal NLB --> Kong Gateway -->
 
 ---
 
+## How Kong Implements the Kubernetes Gateway API
+
+Kong Gateway implements the Kubernetes Gateway API **exactly like Istio does**. The architecture is directly comparable:
+
+| Component | Istio | Kong |
+|-----------|-------|------|
+| **Controller** (watches Gateway API resources) | Istiod | Kong Ingress Controller (KIC) |
+| **Data Plane** (processes traffic) | Envoy Proxy | Kong Gateway |
+| **GatewayClass controllerName** | `gateway.istio.io/gateway-controller` | `konghq.com/kic-gateway-controller` |
+
+```mermaid
+flowchart LR
+    subgraph "Kong Gateway API Implementation"
+        KIC["Kong Ingress Controller\n(watches Gateway API CRDs)"]
+        KG["Kong Gateway Pods\n(data plane - processes traffic)"]
+    end
+    
+    GC["GatewayClass\n(kong)"]
+    GW["Gateway\n(kong-gateway)"]
+    HR["HTTPRoute\n(/app1, /app2, /api/*)"]
+    SVC["Backend Services"]
+    
+    GC --> KIC
+    GW --> KIC
+    HR --> KIC
+    KIC -->|"configures"| KG
+    KG -->|"routes to"| SVC
+```
+
+**Key resources in this project:**
+- **GatewayClass** (`k8s/kong/gateway-class.yaml`): Registers Kong as the Gateway API implementation
+- **Gateway** (`k8s/kong/gateway.yaml`): Creates the Kong Gateway instance listening on ports 80/443
+- **HTTPRoute** resources (`k8s/apps/*/httproute.yaml`): Define path-based routing rules
+
+> **Note:** This is the same Gateway API standard. If you've used Istio's Gateway API implementation, switching to Kong only requires changing the `gatewayClassName` — the HTTPRoute resources remain identical.
+
+---
+
 ## Implementation 2: Istio + AWS API Gateway
 
 AWS API Gateway handles API management as a managed service. Traffic is split — API requests go through API Gateway, web requests go directly to an ALB. Istio provides the K8s Gateway API implementation and service mesh (mTLS).
@@ -526,67 +564,30 @@ terraform apply -var="enable_cloudfront=true"
 $(terraform output -raw eks_get_credentials_command)
 ```
 
-### Step 4: Understanding Kong as a Gateway API Implementation
+### Step 4: (Optional) Configure Kong Konnect Integration
 
-Kong Gateway implements the Kubernetes Gateway API **exactly like Istio does**. The architecture is directly comparable:
-
-| Component | Istio | Kong |
-|-----------|-------|------|
-| **Controller** (watches Gateway API resources) | Istiod | Kong Ingress Controller (KIC) |
-| **Data Plane** (processes traffic) | Envoy Proxy | Kong Gateway |
-| **GatewayClass controllerName** | `gateway.istio.io/gateway-controller` | `konghq.com/kic-gateway-controller` |
-
-```mermaid
-flowchart LR
-    subgraph "Kong Gateway API Implementation"
-        KIC["Kong Ingress Controller\n(watches Gateway API CRDs)"]
-        KG["Kong Gateway Pods\n(data plane - processes traffic)"]
-    end
-    
-    GC["GatewayClass\n(kong)"]
-    GW["Gateway\n(kong-gateway)"]
-    HR["HTTPRoute\n(/app1, /app2, /api/*)"]
-    SVC["Backend Services"]
-    
-    GC --> KIC
-    GW --> KIC
-    HR --> KIC
-    KIC -->|"configures"| KG
-    KG -->|"routes to"| SVC
-```
-
-This project deploys:
-- **GatewayClass** (`k8s/kong/gateway-class.yaml`): Registers Kong as the Gateway API implementation
-- **Gateway** (`k8s/kong/gateway.yaml`): Creates the Kong Gateway instance
-- **HTTPRoute** resources: Define routing rules (just like Istio VirtualService)
-
-### Step 5: (Optional) Configure Kong Konnect Integration
-
-Kong Konnect is **optional**. The Gateway API works without it. Konnect adds:
-- Centralized analytics and observability
-- Developer Portal for API documentation
-- Multi-cluster management
-- AI Gateway features
+Kong Konnect is **optional**. The Gateway API implementation works without it. Konnect adds centralized analytics, Developer Portal, multi-cluster management, and AI Gateway features.
 
 **Skip this step if you don't need Konnect integration.**
 
 If you want Konnect integration:
+
+1. **Generate mTLS Certificates**
    ```bash
-   # Generate certificates
    openssl req -new -x509 -nodes -newkey rsa:2048 \
      -subj "/CN=kongdp/C=US" \
      -keyout ./tls.key -out ./tls.crt -days 365
+   ```
 
-   # Create Kong namespace
+2. **Create TLS Secret in Kubernetes**
+   ```bash
    kubectl create namespace kong
-
-   # Create TLS secret for Konnect connection
    kubectl create secret tls konnect-client-tls -n kong \
      --cert=./tls.crt \
      --key=./tls.key
    ```
 
-4. **Register Certificate with Konnect**
+3. **Register Certificate with Konnect**
    ```bash
    # Format certificate for API (remove newlines)
    CERT=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' tls.crt)
@@ -597,7 +598,7 @@ If you want Konnect integration:
      --json "{\"cert\": \"$CERT\"}"
    ```
 
-5. **Update Helm Values**
+4. **Update Helm Values**
 
    Update `k8s/kong/konnect-values.yaml` with your Konnect endpoints:
    ```yaml
@@ -643,7 +644,7 @@ If you want Konnect integration:
 | `cluster_cert` | Path to client certificate | `/etc/secrets/konnect-client-tls/tls.crt` |
 | `cluster_cert_key` | Path to client private key | `/etc/secrets/konnect-client-tls/tls.key` |
 
-### Step 6: Deploy ArgoCD Root App (Layers 3 & 4)
+### Step 5: Deploy ArgoCD Root App (Layers 3 & 4)
 
 ```bash
 # Get ArgoCD admin password
@@ -656,7 +657,7 @@ kubectl apply -f argocd/apps/root-app.yaml
 kubectl get applications -n argocd -w
 ```
 
-### Step 7: Verify Deployment
+### Step 6: Verify Deployment
 
 #### Basic Verification (All Deployments)
 
