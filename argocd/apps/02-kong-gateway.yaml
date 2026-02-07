@@ -1,14 +1,12 @@
-# ArgoCD App: Kong Gateway Data Plane with Konnect Integration
+# ArgoCD App: Kong Gateway Data Plane (Split Deployment)
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
 # LAYER 3: K8s Customizations
 # Sync Wave: 1 (after Gateway API CRDs)
 #
-# SPLIT DEPLOYMENT: This is the data plane only.
+# SPLIT DEPLOYMENT: Data plane only — no KIC sidecar.
 # KIC is deployed separately via 02b-kong-controller.yaml
-#
-# NOTE: Before deploying, create the kong-cluster-cert secret:
-# kubectl create secret tls kong-cluster-cert -n kong --cert=tls.crt --key=tls.key
+# KIC pushes config via admin API and syncs to Konnect for visibility/licensing.
 
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -34,27 +32,10 @@ spec:
           repository: kong/kong-gateway
           tag: "3.9"
 
-        # No KIC in data plane (deployed separately)
+        # No KIC in data plane (deployed separately via 02b-kong-controller.yaml)
+        # KIC manages routing via admin API + syncs to Konnect
         ingressController:
           enabled: false
-
-        # Konnect data plane connection (AU region)
-        env:
-          role: data_plane
-          database: "off"
-          konnect_mode: "on"
-          vitals: "off"
-          cluster_mtls: pki
-          cluster_control_plane: "b5ec5fb109.au.cp.konghq.com"
-          cluster_telemetry_endpoint: "b5ec5fb109.au.tp.konghq.com:443"
-          cluster_telemetry_server_name: "b5ec5fb109.au.tp.konghq.com"
-          cluster_cert: /etc/secrets/kong-cluster-cert/tls.crt
-          cluster_cert_key: /etc/secrets/kong-cluster-cert/tls.key
-          lua_ssl_trusted_certificate: system
-
-        # Mount Konnect certificate secret
-        secretVolumes:
-          - kong-cluster-cert
 
         # Admin API enabled for KIC gateway discovery (ClusterIP only)
         admin:
