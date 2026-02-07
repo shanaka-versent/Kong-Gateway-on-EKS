@@ -1,7 +1,5 @@
 # POC - AWS EKS with Kubernetes Gateway API & Kong Gateway
 
-**Author:** Shanaka Jayasundera - shanakaj@gmail.com
-
 This POC demonstrates how to implement Kubernetes Gateway API on AWS EKS with **Kong Gateway Enterprise**, integrated with **Kong Konnect** for centralized API management, analytics, and developer portal.
 
 While my previous posts used Istio as the Gateway API implementation, Kong Gateway offers a different approach—focusing on API gateway capabilities at the edge without the service mesh complexity.
@@ -38,9 +36,7 @@ flowchart TB
 
         subgraph K8s["Kubernetes Cluster"]
             direction LR
-            APIGW["API Gateway"]
-            GW["K8s Gateway API"]
-            SVC["Backend Services"]
+            APIGW["API Gateway"] ~~~ GW["K8s Gateway API"] ~~~ SVC["Backend Services"]
         end
     end
 
@@ -332,41 +328,27 @@ Static: Client --> CloudFront + WAF --> S3 (OAC)
 flowchart TB
     subgraph L1["Layer 1: Cloud Foundation"]
         direction LR
-        VPC["VPC"]
-        Subnets["Subnets"]
-        NAT["NAT / IGW"]
+        VPC["VPC"] ~~~ Subnets["Subnets"] ~~~ NAT["NAT / IGW"]
     end
 
     subgraph L2["Layer 2: Platform + Edge"]
         direction LR
-        EKS["EKS Cluster"]
-        IAM["IAM / IRSA"]
-        NLB["Internal NLB"]
-        CF["CloudFront + WAF"]
-        ArgoCD["ArgoCD"]
+        EKS["EKS Cluster"] ~~~ IAM["IAM / IRSA"] ~~~ NLB["Internal NLB"] ~~~ CF["CloudFront + WAF"] ~~~ ArgoCD["ArgoCD"]
     end
 
     subgraph L3Pre["Layer 3 Pre-config: Konnect Setup"]
         direction LR
-        NS["kong Namespace"]
-        TLS["konnect-client-tls Secret"]
-        HelmVals["Helm Values"]
+        NS["kong Namespace"] ~~~ TLS["konnect-client-tls Secret"] ~~~ HelmVals["Helm Values"]
     end
 
     subgraph L3["Layer 3: Gateway"]
         direction LR
-        CRDs["Gateway API CRDs"]
-        KongGW["Kong Gateway Enterprise"]
-        GW["Gateway Resource"]
-        KPlugins["Kong Plugins"]
+        CRDs["Gateway API CRDs"] ~~~ KongGW["Kong Gateway Enterprise"] ~~~ GW["Gateway Resource"] ~~~ KPlugins["Kong Plugins"]
     end
 
     subgraph L4["Layer 4: Applications"]
         direction LR
-        App1["App 1"]
-        App2["App 2"]
-        UsersAPI["Users API"]
-        HealthResp["Health Responder"]
+        App1["App 1"] ~~~ App2["App 2"] ~~~ UsersAPI["Users API"] ~~~ HealthResp["Health Responder"]
     end
 
     L1 -->|"Terraform"| L2
