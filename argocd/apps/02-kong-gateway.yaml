@@ -36,27 +36,12 @@ spec:
         gateway:
           enabled: true
 
-        # Kong Ingress Controller with Konnect integration
+        # Kong Ingress Controller
         ingressController:
           enabled: true
           installCRDs: true
           env:
             feature_gates: "GatewayAlpha=true"
-          # Required for Konnect integration
-          gatewayDiscovery:
-            enabled: true
-            adminApiService:
-              name: "kong-gateway-kong-admin"
-              namespace: "kong"
-          # KIC 3.x native Konnect integration
-          konnect:
-            enabled: true
-            apiHostname: "us.kic.api.konghq.com"
-            controlPlaneID: "d7772b3e-a7a6-4a7b-998e-5b050321def1"
-            tlsClientCert:
-              secretName: "konnect-client-tls"
-            license:
-              enabled: true
 
         # Kong Gateway (Data Plane)
         # NLB is Terraform-managed for CloudFront VPC Origin integration
@@ -73,14 +58,9 @@ spec:
             containerPort: 8443
             servicePort: 443
 
-        # Admin API (internal ClusterIP - required for KIC gateway discovery)
+        # Admin API (disabled for security)
         admin:
-          enabled: true
-          type: ClusterIP
-          http:
-            enabled: true
-            containerPort: 8001
-            servicePort: 8001
+          enabled: false
 
         # Status endpoint
         status:
