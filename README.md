@@ -2,6 +2,8 @@
 
 This POC demonstrates how to implement the Kubernetes Gateway API on AWS EKS using **Kong Gateway Enterprise**, integrated with **Kong Konnect** for centralized API management, analytics, and developer portal.
 
+My previous POCs implemented the Kubernetes Gateway API using Istio — on both [AWS EKS](https://github.com/shanaka-versent/EKS-Istio-GatewayAPI-Demo) and [Azure AKS](https://github.com/shanaka-versent/AKS-Istio-GatewayAPI-Demo). This POC explores Kong Gateway as an alternative Gateway API implementation, and compares what each brings to the table.
+
 Both Istio and Kong implement the **Kubernetes Gateway API** standard for north-south traffic routing into the cluster. The key difference is what each brings beyond basic ingress:
 
 - **Istio Gateway** implements the K8s Gateway API (GatewayClass, Gateway, HTTPRoute) to handle north-south traffic routing. Separately, Istio also provides a service mesh for east-west (service-to-service) traffic — but using Istio as a Gateway API implementation does not require enabling mesh features.
