@@ -1051,37 +1051,7 @@ In the [Istio POC architecture](https://github.com/shanaka-versent/EKS-Istio-Gat
 
 Alternatively, Kong Konnect provides **Dedicated Cloud Gateways** — fully managed instances on Kong's infrastructure — but this introduces a public endpoint (see [deployment options](#deployment-options-for-kong-outside-the-cluster) for the security trade-offs).
 
-### How AWS API Gateway Sits Today (Istio POC)
-
-```mermaid
-%%{init: {'theme': 'neutral'}}%%
-flowchart TB
-    Client["Client"]
-
-    subgraph AWSManaged["AWS Managed Services"]
-        CloudFront["CloudFront + WAF"]
-        APIGW["AWS API Gateway<br/>(API Management)<br/>Auth · Rate Limiting · Usage Plans"]
-    end
-
-    subgraph VPC["VPC — Private Subnets"]
-        VPCLink["VPC Link"]
-        NLB["Internal NLB"]
-
-        subgraph EKS["EKS Cluster"]
-            IstioGW["Istio Gateway<br/>(K8s Gateway API)"]
-            Apps["Backend Services"]
-        end
-    end
-
-    Client --> CloudFront
-    CloudFront --> APIGW
-    APIGW --> VPCLink
-    VPCLink --> NLB
-    NLB --> IstioGW
-    IstioGW --> Apps
-```
-
-### Kong Replacing AWS API Gateway (Same External Position)
+### Kong for API Management with Istio Gateway (Similar to AWS API Gateway)
 
 The recommended approach is to deploy Kong on **separate compute in your VPC** — outside the EKS cluster but still in private subnets. CloudFront connects via **VPC Origin (PrivateLink)**, making Kong completely unreachable from the public internet:
 
