@@ -1,12 +1,14 @@
-# ArgoCD App: Kong Gateway with Konnect Integration
+# ArgoCD App: Kong Gateway Data Plane with Konnect Integration
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
 # LAYER 3: K8s Customizations
 # Sync Wave: 1 (after Gateway API CRDs)
 #
-# NOTE: Before deploying, run scripts/setup-konnect.sh to create the
-# required Kubernetes secrets for Konnect connection.
-# Update the <your-cp> placeholders with your Control Plane ID from Konnect.
+# SPLIT DEPLOYMENT: This is the data plane only.
+# KIC is deployed separately via 02b-kong-controller.yaml
+#
+# NOTE: Before deploying, create the kong-cluster-cert secret:
+# kubectl create secret tls kong-cluster-cert -n kong --cert=tls.crt --key=tls.key
 
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -27,36 +29,40 @@ spec:
     helm:
       valueFiles: []
       values: |
-        # Use Kong Gateway Enterprise image (required for Konnect)
+        # Kong Gateway Enterprise image (required for Konnect)
         image:
           repository: kong/kong-gateway
           tag: "3.9"
 
-        # Enable Gateway API support
-        gateway:
-          enabled: true
-
-        # Kong Ingress Controller
+        # No KIC in data plane (deployed separately)
         ingressController:
-          enabled: true
-          installCRDs: true
-          env:
-            feature_gates: "GatewayAlpha=true"
+          enabled: false
 
         # Konnect data plane connection (AU region)
-        # Kong reports telemetry/analytics to Konnect; KIC manages routing config
         env:
-          cluster_control_plane: "b5ec5fb109.au.cp0.konghq.com:443"
-          cluster_server_name: "b5ec5fb109.au.cp0.konghq.com"
-          cluster_telemetry_endpoint: "b5ec5fb109.au.tp0.konghq.com:443"
-          cluster_telemetry_server_name: "b5ec5fb109.au.tp0.konghq.com"
-          cluster_cert: /etc/secrets/konnect-client-tls/tls.crt
-          cluster_cert_key: /etc/secrets/konnect-client-tls/tls.key
+          role: data_plane
+          database: "off"
+          konnect_mode: "on"
+          vitals: "off"
+          cluster_mtls: pki
+          cluster_control_plane: "b5ec5fb109.au.cp.konghq.com"
+          cluster_telemetry_endpoint: "b5ec5fb109.au.tp.konghq.com:443"
+          cluster_telemetry_server_name: "b5ec5fb109.au.tp.konghq.com"
+          cluster_cert: /etc/secrets/kong-cluster-cert/tls.crt
+          cluster_cert_key: /etc/secrets/kong-cluster-cert/tls.key
           lua_ssl_trusted_certificate: system
 
-        # Mount Konnect certificate secrets
+        # Mount Konnect certificate secret
         secretVolumes:
-          - konnect-client-tls
+          - kong-cluster-cert
+
+        # Admin API enabled for KIC gateway discovery (ClusterIP only)
+        admin:
+          enabled: true
+          type: ClusterIP
+          http:
+            enabled: true
+            containerPort: 8001
 
         # Kong Gateway (Data Plane)
         # NLB is Terraform-managed for CloudFront VPC Origin integration
@@ -72,10 +78,6 @@ spec:
             enabled: true
             containerPort: 8443
             servicePort: 443
-
-        # Admin API (disabled for security)
-        admin:
-          enabled: false
 
         # Status endpoint
         status:

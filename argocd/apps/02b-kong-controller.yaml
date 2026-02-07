@@ -1,0 +1,67 @@
+# ArgoCD App: Kong Ingress Controller with Konnect Integration
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# LAYER 3: K8s Customizations
+# Sync Wave: 1 (after Gateway API CRDs, alongside data plane)
+#
+# SPLIT DEPLOYMENT: This is the KIC only (no Kong proxy sidecar).
+# The data plane is deployed separately via 02-kong-gateway.yaml
+#
+# KIC discovers Kong Gateway pods via admin API (gatewayDiscovery)
+# and syncs configuration to Kong Konnect for visibility/licensing.
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kong-controller
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://charts.konghq.com
+    chart: kong
+    targetRevision: 2.38.0
+    helm:
+      valueFiles: []
+      values: |
+        # No Kong proxy sidecar (data plane is separate)
+        deployment:
+          kong:
+            enabled: false
+
+        # Kong Ingress Controller with Konnect integration
+        ingressController:
+          enabled: true
+          installCRDs: false  # CRDs installed by 01-gateway-api-crds
+          env:
+            feature_gates: "GatewayAlpha=true"
+          konnect:
+            enabled: true
+            controlPlaneID: "31c96ad8-651b-40b6-92e9-b9ab8dae1cdf"
+            apiHostname: "au.kic.api.konghq.com"
+            tlsClientCertSecretName: "kong-cluster-cert"
+            license:
+              enabled: true
+
+        # Gateway Discovery: KIC discovers Kong data plane via admin API
+        gatewayDiscovery:
+          enabled: true
+          adminApiService:
+            name: "kong-gateway-kong-admin"
+            namespace: "kong"
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kong
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
