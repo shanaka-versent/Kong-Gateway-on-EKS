@@ -162,7 +162,7 @@ resource "aws_cloudfront_vpc_origin" "nlb" {
     arn                    = var.nlb_arn
     http_port              = 80
     https_port             = 443
-    origin_protocol_policy = "http-only" # NLB uses TCP listeners, TLS terminated at CloudFront
+    origin_protocol_policy = "https-only" # End-to-end TLS: CloudFront re-encrypts to Kong Gateway via NLB
 
     origin_ssl_protocols {
       items    = ["TLSv1.2"]

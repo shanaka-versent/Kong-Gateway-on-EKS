@@ -122,7 +122,7 @@ flowchart TB
 
             subgraph KongNS["kong namespace"]
                 GWClass["GatewayClass: kong"]
-                GW["Gateway: kong-gateway<br/>Listener: HTTP :80"]
+                GW["Gateway: kong-gateway<br/>Listener: HTTPS :443<br/>TLS: kong-gateway-tls"]
                 KIC["Kong Ingress Controller"]
                 KongDP["Kong Gateway Pods (x2)"]
             end
@@ -198,7 +198,7 @@ flowchart TB
 
 **Traffic Flow:**
 ```
-Client → CloudFront + WAF → VPC Origin → Internal NLB → Kong Gateway → HTTPRoute → Backend Service
+Client → CloudFront + WAF (TLS) → VPC Origin → Internal NLB → Kong Gateway (TLS) → HTTPRoute → Backend Service
 ```
 
 **Key Design Decisions:**
@@ -212,7 +212,7 @@ Client → CloudFront + WAF → VPC Origin → Internal NLB → Kong Gateway →
 
 ## End-to-End Traffic Flow
 
-The architecture implements **TLS termination at the CloudFront edge** with fully private internal connectivity via VPC Origin (PrivateLink). No public endpoints are exposed inside the VPC.
+The architecture implements **dual TLS termination** for end-to-end encryption, with fully private internal connectivity via VPC Origin (PrivateLink). No public endpoints are exposed inside the VPC.
 
 ```mermaid
 sequenceDiagram
@@ -222,17 +222,17 @@ sequenceDiagram
     participant Kong as Kong Gateway<br/>(kong namespace)
     participant App as Backend Service
 
-    Note over Client,CF: TLS Termination at Edge
-    Client->>+CF: HTTPS :443 (ACM Certificate)
+    Note over Client,CF: TLS Session 1 (Frontend)
+    Client->>+CF: HTTPS :443<br/>TLS with ACM Certificate
     CF->>CF: WAF Rules (SQLi, XSS, Rate Limit)
     CF->>CF: TLS Termination
 
-    Note over CF,NLB: VPC Origin (AWS PrivateLink)
-    CF->>+NLB: HTTP :80 (AWS Backbone)
+    Note over CF,Kong: TLS Session 2 (Backend)
+    CF->>+NLB: HTTPS :443<br/>Re-encrypted (VPC Origin)
+    NLB->>+Kong: HTTPS :8443<br/>TLS Passthrough
+    Kong->>Kong: TLS Termination<br/>(kong-gateway-tls secret)
 
-    Note over NLB,App: EKS Cluster (Private Subnets)
-    NLB->>+Kong: HTTP :8000 (TargetGroupBinding)
-
+    Note over Kong,App: Plain HTTP (Cluster-internal)
     alt /api/users - API Route (with plugins)
         Kong->>Kong: rate-limiting (100/min per IP)
         Kong->>Kong: request-transformer (add headers)
@@ -255,12 +255,20 @@ sequenceDiagram
     CF-->>-Client: HTTPS Response
 ```
 
+### TLS Certificate Chain
+
+| Component | Certificate | Purpose |
+|-----------|-------------|---------|
+| **CloudFront Frontend** | ACM Certificate | Terminates client HTTPS, provides trusted public certificate |
+| **Kong Gateway Backend** | `kong-gateway-tls` Secret | Terminates re-encrypted traffic from CloudFront via NLB |
+| **Kong → Backend Pods** | Plain HTTP | Cluster-internal traffic on port 8080 |
+
 ### How It Maps to This Repo
 
 | Component | K8s Resource | File | Details |
 |-----------|-------------|------|---------|
 | **GatewayClass** | `kong` | `k8s/kong/gateway-class.yaml` | `controllerName: konghq.com/kic-gateway-controller` |
-| **Gateway** | `kong-gateway` | `k8s/kong/gateway.yaml` | Listener on port 80 (HTTP), namespace `kong`, `allowedRoutes: All` |
+| **Gateway** | `kong-gateway` | `k8s/kong/gateway.yaml` | Listener on port 443 (HTTPS), TLS terminated with `kong-gateway-tls` secret, `allowedRoutes: All` |
 | **HTTPRoute** | `users-api-route` | `k8s/apps/api/httproute.yaml` | `/api/users` → `users-api:8080` + plugins: rate-limiting, request-transformer, cors |
 | **HTTPRoute** | `app1-route` | `k8s/apps/tenant-app1/httproute.yaml` | `/app1` → `sample-app-1:8080` (no plugins — clean pass-through) |
 | **HTTPRoute** | `app2-route` | `k8s/apps/tenant-app2/httproute.yaml` | `/app2` → `sample-app-2:8080` (no plugins — clean pass-through) |
@@ -278,9 +286,9 @@ sequenceDiagram
 |---------|----------|---------|
 | **Client → CloudFront** | TLS (ACM Certificate) | HTTPS terminated at edge; trusted public certificate via AWS Certificate Manager |
 | **CloudFront WAF** | AWS WAF Managed Rules | SQLi, XSS, bad inputs, rate limiting applied before traffic enters VPC |
-| **CloudFront → NLB** | VPC Origin (PrivateLink) | Traffic over AWS backbone — no internet exposure, no public NLB |
-| **NLB → Kong Gateway** | Private subnet + SG | NLB SG allows only CloudFront prefix list; Kong pods registered via TargetGroupBinding |
-| **Kong Gateway** | Kong Plugin Chain | Rate limiting, request transformation, CORS — applied per-route via annotations |
+| **CloudFront → NLB** | HTTPS via VPC Origin (PrivateLink) | Re-encrypted traffic over AWS backbone — no internet exposure, no public NLB |
+| **NLB → Kong Gateway** | TLS Passthrough | NLB forwards HTTPS :443 to Kong :8443; SG allows only CloudFront prefix list |
+| **Kong Gateway** | TLS Termination + Plugin Chain | TLS terminated with `kong-gateway-tls` secret; rate limiting, transforms, CORS per-route |
 | **Kong → Backend** | Cluster-internal HTTP | HTTPRoute + ReferenceGrant for cross-namespace routing to services on port 8080 |
 
 ---
@@ -631,7 +639,7 @@ $(terraform output -raw eks_get_credentials_command)
 ### Step 4: Configure Kong Konnect Integration (Layer 3 Pre-config)
 
 This step **must be completed before Step 5** (ArgoCD deployment). ArgoCD will deploy Kong Gateway Enterprise in Layer 3, and the Enterprise pods require:
-- The `kong` namespace and `konnect-client-tls` secret to exist
+- The `kong` namespace with `konnect-client-tls` secret (Konnect mTLS) and `kong-gateway-tls` secret (end-to-end TLS)
 - Helm values configured with the Konnect endpoints and Enterprise image
 - The mTLS certificate registered with your Konnect Control Plane
 
@@ -646,22 +654,34 @@ Konnect automatically provisions the Enterprise license — no license file mana
    - Name it (e.g., `eks-demo`) and save
    - Note the **Control Plane ID** from the overview page
 
-2. **Generate mTLS Certificates**
+2. **Generate Konnect mTLS Certificates**
    ```bash
    openssl req -new -x509 -nodes -newkey rsa:2048 \
      -subj "/CN=kongdp/C=US" \
      -keyout ./tls.key -out ./tls.crt -days 365
    ```
 
-3. **Create TLS Secret in Kubernetes**
+3. **Generate Gateway TLS Certificates (End-to-End TLS)**
+   ```bash
+   ./scripts/01-generate-certs.sh
+   ```
+
+4. **Create TLS Secrets in Kubernetes**
    ```bash
    kubectl create namespace kong
+
+   # Konnect mTLS secret
    kubectl create secret tls konnect-client-tls -n kong \
      --cert=./tls.crt \
      --key=./tls.key
+
+   # Gateway TLS secret (for end-to-end encryption)
+   kubectl create secret tls kong-gateway-tls -n kong \
+     --cert=certs/server.crt \
+     --key=certs/server.key
    ```
 
-4. **Register Certificate with Konnect**
+5. **Register Certificate with Konnect**
    ```bash
    # Set your Konnect variables
    export KONNECT_REGION="us"          # us, eu, au, me, in, sg
@@ -677,7 +697,7 @@ Konnect automatically provisions the Enterprise license — no license file mana
      --json "{\"cert\": \"$CERT\"}"
    ```
 
-5. **Update Helm Values**
+6. **Update Helm Values**
 
    Update `k8s/kong/konnect-values.yaml` with your Konnect endpoints:
    ```yaml
@@ -990,9 +1010,18 @@ If you don't have a Kong Konnect subscription and don't need Enterprise features
 
 ### OSS Deployment Steps
 
-**Skip Step 4** entirely (no Layer 3 pre-config needed) and make these changes:
+**Skip the Konnect steps** in Step 4 (steps 1, 2, 5, 6) but **still create the Gateway TLS secret** for end-to-end encryption:
 
-1. **Use the OSS Helm values** (`k8s/kong/values.yaml` instead of `konnect-values.yaml`):
+1. **Generate Gateway TLS Certificates and create the secret**
+   ```bash
+   ./scripts/01-generate-certs.sh
+   kubectl create namespace kong
+   kubectl create secret tls kong-gateway-tls -n kong \
+     --cert=certs/server.crt \
+     --key=certs/server.key
+   ```
+
+2. **Use the OSS Helm values** (`k8s/kong/values.yaml` instead of `konnect-values.yaml`):
    ```yaml
    image:
      repository: kong/kong    # OSS image (not kong/kong-gateway)
@@ -1008,9 +1037,9 @@ If you don't have a Kong Konnect subscription and don't need Enterprise features
        # No konnect_mode, cluster_*, or role settings needed
    ```
 
-2. **Update the ArgoCD app** (`argocd/apps/02-kong-gateway.yaml`) to reference `values.yaml` instead of `konnect-values.yaml`
+3. **Update the ArgoCD app** (`argocd/apps/02-kong-gateway.yaml`) to reference `values.yaml` instead of `konnect-values.yaml`
 
-3. **Deploy Steps 1-3, then Step 5-6 directly** — ArgoCD will deploy Kong Gateway OSS without Konnect. No namespace or secret pre-creation needed since the OSS image doesn't require Konnect credentials
+4. **Deploy Steps 1-3, then Step 5-6 directly** — ArgoCD will deploy Kong Gateway OSS without Konnect
 
 > **Note:** The Gateway API resources (GatewayClass, Gateway, HTTPRoute) work identically with both editions. Only the available plugin set and management capabilities differ.
 

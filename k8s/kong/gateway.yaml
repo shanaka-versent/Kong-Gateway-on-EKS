@@ -2,7 +2,12 @@
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
 # This Gateway routes traffic from the Terraform-managed Internal NLB to backend services.
-# Traffic flow: CloudFront (WAF) --> VPC Origin --> Internal NLB --> Kong Gateway --> Services
+# Traffic flow: CloudFront (WAF) --> VPC Origin --> Internal NLB --> Kong Gateway (TLS) --> Services
+#
+# END-TO-END TLS:
+# 1. Client → CloudFront: TLS terminated using ACM certificate (managed by AWS)
+# 2. CloudFront → VPC Origin → NLB → Kong Gateway: TLS using self-signed certificate (kong-gateway-tls secret)
+# 3. Kong Gateway → Backend Pods: Plain HTTP (cluster-internal)
 #
 # NOTE: NLB is managed by Terraform (not by LB Controller annotations).
 # Kong pods are registered with the NLB via TargetGroupBinding CRD.
@@ -16,9 +21,14 @@ metadata:
 spec:
   gatewayClassName: kong
   listeners:
-    - name: http
-      protocol: HTTP
-      port: 80
+    - name: https
+      protocol: HTTPS
+      port: 443
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: kong-gateway-tls
+            namespace: kong
       allowedRoutes:
         namespaces:
           from: All

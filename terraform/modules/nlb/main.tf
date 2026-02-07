@@ -15,7 +15,7 @@
 # (provided by AWS Load Balancer Controller).
 #
 # Traffic flow:
-# CloudFront --> VPC Origin (AWS backbone) --> Internal NLB --> Kong Pods
+# CloudFront --> VPC Origin (AWS backbone) --> Internal NLB :443 --> Kong Pods :8443 (TLS)
 
 # ==============================================================================
 # DATA SOURCES
@@ -36,11 +36,11 @@ resource "aws_security_group" "nlb" {
   description = "Security group for Internal NLB - allows traffic from CloudFront VPC Origin"
   vpc_id      = var.vpc_id
 
-  # Inbound: Allow HTTP from CloudFront VPC Origin ENIs
+  # Inbound: Allow HTTPS from CloudFront VPC Origin ENIs
   ingress {
-    description     = "HTTP from CloudFront VPC Origin"
-    from_port       = 80
-    to_port         = 80
+    description     = "HTTPS from CloudFront VPC Origin"
+    from_port       = 443
+    to_port         = 443
     protocol        = "tcp"
     prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront.id]
   }
@@ -99,7 +99,7 @@ resource "aws_lb" "internal" {
 
 resource "aws_lb_target_group" "kong" {
   name        = "tg-kong-${var.name_prefix}"
-  port        = 80
+  port        = 443
   protocol    = "TCP"
   vpc_id      = var.vpc_id
   target_type = "ip"
@@ -127,9 +127,9 @@ resource "aws_lb_target_group" "kong" {
 # LISTENER
 # ==============================================================================
 
-resource "aws_lb_listener" "tcp_80" {
+resource "aws_lb_listener" "tcp_443" {
   load_balancer_arn = aws_lb.internal.arn
-  port              = 80
+  port              = 443
   protocol          = "TCP"
 
   default_action {
