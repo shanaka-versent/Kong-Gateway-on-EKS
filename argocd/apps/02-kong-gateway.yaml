@@ -27,6 +27,11 @@ spec:
     helm:
       valueFiles: []
       values: |
+        # Use Kong Gateway Enterprise image (required for Konnect)
+        image:
+          repository: kong/kong-gateway
+          tag: "3.9"
+
         # Enable Gateway API support
         gateway:
           enabled: true
