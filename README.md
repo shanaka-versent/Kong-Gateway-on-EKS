@@ -21,7 +21,7 @@ This is particularly relevant for teams who:
 
 ---
 
-## Reference Architecture (Common Pattern)
+## High-level Architecture
 
 All implementations in this series follow a common reference architecture. The pattern is **cloud-agnostic** and applies to both AWS (CloudFront) and Azure (Front Door).
 
@@ -1274,13 +1274,14 @@ AWS WAF and Kong plugins remain **complementary**:
 
 ### When to Use This Pattern
 
-- You want to **replace AWS API Gateway** with a cloud-agnostic managed API gateway that sits in the **same architectural position** (outside the cluster)
-- You need a **developer portal** and **centralized API analytics** that AWS API Gateway doesn't provide natively
-- You want **consistent API management across multi-cloud** — the same Kong config works whether your clusters are on AWS, Azure, or GCP
-- You want **built-in authentication plugins** (JWT, OAuth, OIDC) instead of writing Lambda Authorizers
-- You're already using **Istio for K8s Gateway API routing** and service mesh — and only need an external API management layer
+- You have **APIs hosted outside of Kubernetes** (e.g., on EC2, ECS, Lambda, or third-party services) that need to be exposed and managed **alongside** APIs running on the EKS cluster — a single external API management layer provides a **unified entry point** for both
+- You want **one consistent API management layer** across all backends — whether they run on K8s or not — with the same authentication, rate limiting, and plugin policies
+- You're already using **Istio for K8s Gateway API routing** and service mesh inside the cluster, and only need an external layer for **cross-platform API management**
+- You want to keep API management concerns **separated from K8s cluster operations** — different teams can manage APIs and cluster infrastructure independently
+- You need a **developer portal** and **centralized API analytics** that span both K8s and non-K8s backends
+- You want **consistent API management across multi-cloud** — the same Kong config works whether your backends are on AWS, Azure, or GCP
 
-> **Key Insight:** In this pattern, nothing changes inside the EKS cluster. Istio Gateway, HTTPRoutes, and backend services remain exactly as they are. You're only replacing the **external API management layer** — swapping AWS API Gateway for Kong Gateway on separate compute in your VPC. With the self-hosted option, Kong sits in private subnets with no public endpoint, connected to CloudFront via VPC Origin (PrivateLink) — making CloudFront bypass **physically impossible** at the network level.
+> **Key Insight:** In this pattern, nothing changes inside the EKS cluster. Istio Gateway, HTTPRoutes, and backend services remain exactly as they are. Kong sits outside as an API management layer that can front **both** K8s-hosted services (via Istio Gateway) and non-K8s services (via direct upstream routing) — giving you a single pane of glass for all your APIs regardless of where the backends run.
 
 ---
 
