@@ -14,22 +14,21 @@ gateway:
   # Konnect connection settings
   env:
     # Control Plane connection
-    cluster_control_plane: "<your-cp>.us.cp0.konghq.com:443"
-    cluster_server_name: "<your-cp>.us.cp0.konghq.com"
+    cluster_control_plane: "d7772b3e-a7a6-4a7b-998e-5b050321def1.us.cp0.konghq.com:443"
+    cluster_server_name: "d7772b3e-a7a6-4a7b-998e-5b050321def1.us.cp0.konghq.com"
 
     # Telemetry endpoint for analytics
-    cluster_telemetry_endpoint: "<your-cp>.us.tp0.konghq.com:443"
-    cluster_telemetry_server_name: "<your-cp>.us.tp0.konghq.com"
+    cluster_telemetry_endpoint: "d7772b3e-a7a6-4a7b-998e-5b050321def1.us.tp0.konghq.com:443"
+    cluster_telemetry_server_name: "d7772b3e-a7a6-4a7b-998e-5b050321def1.us.tp0.konghq.com"
 
     # Certificate paths (mounted from secrets)
     cluster_cert: /etc/secrets/konnect-client-tls/tls.crt
     cluster_cert_key: /etc/secrets/konnect-client-tls/tls.key
-    lua_ssl_trusted_certificate: /etc/secrets/konnect-cluster-cert/ca.crt
+    lua_ssl_trusted_certificate: system
 
   # Mount Konnect secrets
   secretVolumes:
     - konnect-client-tls
-    - konnect-cluster-cert
 
 # Kong Ingress Controller
 ingressController:

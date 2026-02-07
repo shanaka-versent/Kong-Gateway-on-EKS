@@ -18,40 +18,34 @@
 # CloudFront --> VPC Origin (AWS backbone) --> Internal NLB :443 --> Kong Pods :8443 (TLS)
 
 # ==============================================================================
-# DATA SOURCES
-# ==============================================================================
-
-# CloudFront managed prefix list for NLB security group
-# This allows inbound traffic from CloudFront VPC Origin ENIs
-data "aws_ec2_managed_prefix_list" "cloudfront" {
-  name = "com.amazonaws.global.cloudfront.origin-facing"
-}
-
-# ==============================================================================
 # SECURITY GROUP
 # ==============================================================================
 
+# CloudFront VPC Origin uses hyperplane ENIs placed inside the VPC subnets,
+# so traffic arrives from within the VPC CIDR — not from CloudFront public IPs.
+# The NLB setting enforce_security_group_inbound_rules_on_private_link_traffic = "on"
+# ensures only authorized CloudFront VPC Origin PrivateLink traffic is accepted.
 resource "aws_security_group" "nlb" {
   name        = "nlb-${var.name_prefix}"
   description = "Security group for Internal NLB - allows traffic from CloudFront VPC Origin"
   vpc_id      = var.vpc_id
 
-  # Inbound: Allow HTTPS from CloudFront VPC Origin ENIs
+  # Inbound: Allow HTTPS from CloudFront VPC Origin ENIs (within VPC)
   ingress {
-    description     = "HTTPS from CloudFront VPC Origin"
-    from_port       = 443
-    to_port         = 443
-    protocol        = "tcp"
-    prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront.id]
+    description = "HTTPS from CloudFront VPC Origin"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
   }
 
-  # Inbound: Allow health check traffic from CloudFront VPC Origin
+  # Inbound: Allow health check traffic from CloudFront VPC Origin ENIs
   ingress {
-    description     = "Health check from CloudFront VPC Origin"
-    from_port       = var.health_check_port
-    to_port         = var.health_check_port
-    protocol        = "tcp"
-    prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront.id]
+    description = "Health check from CloudFront VPC Origin"
+    from_port   = var.health_check_port
+    to_port     = var.health_check_port
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
   }
 
   # Outbound: Allow all traffic to VPC CIDR (for target health checks and Kong pods)

@@ -226,51 +226,21 @@ resource "aws_cloudfront_cache_policy" "static_assets" {
   }
 }
 
-# Cache policy for dynamic content (no caching - APIs, web apps)
-resource "aws_cloudfront_cache_policy" "no_cache" {
-  name    = "${var.name_prefix}-no-cache"
-  comment = "No caching for dynamic content (API, web apps via Kong)"
-
-  default_ttl = 0
-  max_ttl     = 0
-  min_ttl     = 0
-
-  parameters_in_cache_key_and_forwarded_to_origin {
-    cookies_config {
-      cookie_behavior = "all"
-    }
-    headers_config {
-      header_behavior = "whitelist"
-      headers {
-        items = ["Authorization", "Host", "Accept", "Accept-Language"]
-      }
-    }
-    query_strings_config {
-      query_string_behavior = "all"
-    }
-  }
+# Use AWS managed CachingDisabled policy for API traffic (no caching)
+# Managed policy ID: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+data "aws_cloudfront_cache_policy" "caching_disabled" {
+  name = "Managed-CachingDisabled"
 }
 
 # ==============================================================================
 # CLOUDFRONT ORIGIN REQUEST POLICY
 # ==============================================================================
 
-resource "aws_cloudfront_origin_request_policy" "kong" {
-  name    = "${var.name_prefix}-kong-origin"
-  comment = "Origin request policy for Kong Gateway via VPC Origin"
-
-  cookies_config {
-    cookie_behavior = "all"
-  }
-  headers_config {
-    header_behavior = "whitelist"
-    headers {
-      items = ["Host", "Accept", "Accept-Language", "Authorization", "CloudFront-Forwarded-Proto", "X-Forwarded-For"]
-    }
-  }
-  query_strings_config {
-    query_string_behavior = "all"
-  }
+# Use AWS managed AllViewerExceptHostHeader policy
+# Forwards all viewer headers (including Authorization) except Host
+# Managed policy ID: b689b0a0-8776-4c4d-943d-2588d6b6e5b8
+data "aws_cloudfront_origin_request_policy" "all_viewer_except_host" {
+  name = "Managed-AllViewerExceptHostHeader"
 }
 
 # ==============================================================================
@@ -360,8 +330,8 @@ resource "aws_cloudfront_distribution" "main" {
     cached_methods   = ["GET", "HEAD"]
     target_origin_id = "VPCOrigin-Kong"
 
-    cache_policy_id            = aws_cloudfront_cache_policy.no_cache.id
-    origin_request_policy_id   = aws_cloudfront_origin_request_policy.kong.id
+    cache_policy_id            = data.aws_cloudfront_cache_policy.caching_disabled.id
+    origin_request_policy_id   = data.aws_cloudfront_origin_request_policy.all_viewer_except_host.id
     response_headers_policy_id = aws_cloudfront_response_headers_policy.security_headers.id
 
     viewer_protocol_policy = "redirect-to-https"

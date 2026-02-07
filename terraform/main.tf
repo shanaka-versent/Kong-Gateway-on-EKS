@@ -205,7 +205,7 @@ resource "kubernetes_manifest" "target_group_binding" {
       targetType     = "ip"
       serviceRef = {
         name = "kong-kong-proxy" # Kong Helm chart proxy service name
-        port = 80
+        port = 443
       }
       networking = {
         ingress = [{
@@ -216,7 +216,7 @@ resource "kubernetes_manifest" "target_group_binding" {
           }]
           ports = [
             {
-              port     = 8000 # Kong proxy container port
+              port     = 8443 # Kong proxy TLS container port
               protocol = "TCP"
             },
             {
