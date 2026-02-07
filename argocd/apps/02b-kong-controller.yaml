@@ -40,6 +40,7 @@ spec:
           installCRDs: false  # CRDs installed by 01-gateway-api-crds
           env:
             feature_gates: "GatewayAlpha=true"
+            publish_service: "kong/kong-gateway-kong-proxy"
           konnect:
             enabled: true
             runtimeGroupID: "31c96ad8-651b-40b6-92e9-b9ab8dae1cdf"
