@@ -86,35 +86,6 @@ flowchart TB
 
 > **Key Security Property:** The Internal Load Balancer has NO public endpoint. Private connectivity from the CDN uses AWS-managed ENIs (VPC Origin) or Azure Private Endpoints. **It is impossible to bypass the CDN/WAF layer.**
 
-### Where Does the API Gateway Capability Sit?
-
-The Kubernetes Gateway API standard (GatewayClass, Gateway, HTTPRoute) handles **routing only** — it defines how traffic enters the cluster and reaches backend services. It does **not** provide API management capabilities like authentication, rate limiting, request transformation, or a developer portal.
-
-This means the architectural decision is: **where does API management live?**
-
-```mermaid
-%%{init: {'theme': 'neutral'}}%%
-flowchart TB
-    subgraph Kong["Kong Gateway (This Repo)"]
-        direction LR
-        A1["CDN + WAF"] --> B1["Internal LB"] --> C1["Kong Gateway<br/>K8s Gateway API +<br/>API Management"] --> D1["Backend Services"]
-    end
-
-    subgraph Istio["Istio Gateway + Separate API Management"]
-        direction LR
-        A2["CDN + WAF"] --> B2["API Management<br/>(AWS API GW / Azure APIM / etc)"] --> C2["Internal LB"] --> D2["Istio Gateway<br/>K8s Gateway API<br/>(routing only)"] --> E2["Backend Services"]
-    end
-```
-
-**Kong Gateway** combines K8s Gateway API routing and API management in a single component — rate limiting, auth, transforms, and 200+ plugins are applied directly at the gateway.
-
-**Istio Gateway** implements K8s Gateway API for routing but does not include API management. To expose APIs with full management capabilities (rate limiting, API keys, OAuth, usage plans, developer portal), you need a **separate API management layer** such as:
-- **AWS API Gateway** (with VPC Link)
-- **Azure API Management (APIM)**
-- **Apigee**, **Tyk**, or any other API management platform
-
-This adds an extra component to the architecture, separate traffic paths (API vs web), and additional operational overhead.
-
 ---
 
 ## Detailed Architecture
@@ -227,6 +198,13 @@ Client → CloudFront + WAF (TLS) → VPC Origin → Internal NLB → Kong Gatew
 - **Terraform-managed NLB** — created before Kong deploys (avoids chicken-and-egg with CloudFront VPC Origin)
 - **Kong Konnect** — telemetry and management via SaaS, no admin API exposed in-cluster
 
+### Node Pool Layout
+
+| Node Pool | Taint | Workloads |
+|-----------|-------|-----------|
+| System Nodes | CriticalAddonsOnly | ArgoCD, Kong components, AWS LB Controller |
+| User Nodes | None | Application workloads (app1, app2, users-api) |
+
 ---
 
 ## End-to-End Traffic Flow
@@ -282,34 +260,6 @@ sequenceDiagram
 | **Kong Gateway Backend** | `kong-gateway-tls` Secret | Terminates re-encrypted traffic from CloudFront via NLB |
 | **Kong → Backend Pods** | Plain HTTP | Cluster-internal traffic on port 8080 |
 
-### How It Maps to This Repo
-
-| Component | K8s Resource | File | Details |
-|-----------|-------------|------|---------|
-| **GatewayClass** | `kong` | `k8s/kong/gateway-class.yaml` | `controllerName: konghq.com/kic-gateway-controller` |
-| **Gateway** | `kong-gateway` | `k8s/kong/gateway.yaml` | Listener on port 443 (HTTPS), TLS terminated with `kong-gateway-tls` secret, `allowedRoutes: All` |
-| **HTTPRoute** | `users-api-route` | `k8s/apps/api/httproute.yaml` | `/api/users` → `users-api:8080` + plugins: rate-limiting, request-transformer, cors |
-| **HTTPRoute** | `app1-route` | `k8s/apps/tenant-app1/httproute.yaml` | `/app1` → `sample-app-1:8080` (no plugins — clean pass-through) |
-| **HTTPRoute** | `app2-route` | `k8s/apps/tenant-app2/httproute.yaml` | `/app2` → `sample-app-2:8080` (no plugins — clean pass-through) |
-| **HTTPRoute** | `health-route` | `k8s/gateway-health/httproute.yaml` | `/healthz` → `health-responder:8080` (NLB health probes) |
-| **KongPlugin** | `rate-limiting` | `k8s/apps/api/kong-plugins.yaml` | 100 req/min per IP, local policy |
-| **KongPlugin** | `request-transformer` | `k8s/apps/api/kong-plugins.yaml` | Adds `X-Request-ID`, `X-Forwarded-Proto`, `X-Kong-Proxy` headers |
-| **KongPlugin** | `cors` | `k8s/apps/api/kong-plugins.yaml` | All origins, standard methods, exposes rate-limit headers |
-| **ReferenceGrant** | Per namespace | Each `httproute.yaml` | Allows cross-namespace routing from app namespaces to `kong` Gateway |
-| **NLB** | Terraform-managed | `terraform/modules/nlb/` | Internal NLB with CloudFront prefix list SG; Kong pods registered via TargetGroupBinding |
-| **VPC Origin** | Terraform-managed | `terraform/modules/cloudfront/` | PrivateLink from CloudFront to Internal NLB — no public endpoints |
-
-### Traffic Security Layers
-
-| Segment | Security | Details |
-|---------|----------|---------|
-| **Client → CloudFront** | TLS (ACM Certificate) | HTTPS terminated at edge; trusted public certificate via AWS Certificate Manager |
-| **CloudFront WAF** | AWS WAF Managed Rules | SQLi, XSS, bad inputs, rate limiting applied before traffic enters VPC |
-| **CloudFront → NLB** | HTTPS via VPC Origin (PrivateLink) | Re-encrypted traffic over AWS backbone — no internet exposure, no public NLB |
-| **NLB → Kong Gateway** | TLS Passthrough | NLB forwards HTTPS :443 to Kong :8443; SG allows only CloudFront prefix list |
-| **Kong Gateway** | TLS Termination + Plugin Chain | TLS terminated with `kong-gateway-tls` secret; rate limiting, transforms, CORS per-route |
-| **Kong → Backend** | Cluster-internal HTTP | HTTPRoute + ReferenceGrant for cross-namespace routing to services on port 8080 |
-
 ---
 
 ## How Kong Implements the Kubernetes Gateway API
@@ -349,28 +299,6 @@ flowchart LR
 - **HTTPRoute** resources (`k8s/apps/*/httproute.yaml`): Define path-based routing rules
 
 > **Note:** This is the same Gateway API standard. If you've used Istio's Gateway API implementation, switching to Kong only requires changing the `gatewayClassName` — the HTTPRoute resources remain identical.
-
----
-
-## Why Kong Gateway Over Istio Gateway for API Management?
-
-Both Kong and Istio implement the same Kubernetes Gateway API standard — the HTTPRoute resources are identical. The difference is what each brings beyond routing:
-
-| Capability | Kong Gateway | Istio Gateway |
-|-----------|--------------|---------------|
-| **K8s Gateway API Routing** | Yes | Yes |
-| **Rate Limiting** | Built-in (KongPlugin) | Requires separate API management layer |
-| **Authentication (JWT, OAuth, OIDC)** | Built-in (KongPlugin) | Requires separate API management layer |
-| **Request/Response Transforms** | Built-in (KongPlugin) | Requires separate API management layer |
-| **API Key Management** | Built-in (KongPlugin) | Requires separate API management layer |
-| **Developer Portal** | Kong Konnect (SaaS) | Requires separate API management layer |
-| **Analytics & Monitoring** | Kong Konnect (SaaS) | Requires separate API management layer |
-| **Plugin Ecosystem** | 200+ plugins | N/A |
-| **Service Mesh (East-West mTLS)** | Requires Kong Mesh (separate) | Built-in (Ambient or Sidecar) |
-
-Since Istio Gateway only provides ingress routing, teams that need to expose APIs with full management capabilities must add a **separate API management layer** — such as AWS API Gateway, Azure APIM, Apigee, or Tyk. This introduces additional components, split traffic paths, and operational overhead.
-
-Kong Gateway eliminates this by combining K8s Gateway API routing and API management in a single component.
 
 > **Note:** API management (north-south) and service mesh (east-west) are complementary concerns. You can use Kong Gateway at the edge for API management and Istio Ambient internally for service-to-service mTLS — they work together.
 
@@ -422,59 +350,7 @@ flowchart TB
 
 ---
 
-## EKS Cluster Architecture
-
-```mermaid
-%%{init: {'theme': 'neutral'}}%%
-flowchart TB
-    subgraph Edge["CloudFront Edge"]
-        CF["CloudFront + WAF"]
-    end
-
-    subgraph VPC["AWS VPC"]
-        subgraph PubSub["Public Subnets"]
-            NAT["NAT Gateway"]
-        end
-
-        subgraph PrivSub["Private Subnets"]
-            VPCOrigin["VPC Origin ENIs"]
-            NLB["Internal NLB"]
-
-            subgraph EKS["EKS Cluster"]
-                subgraph SysNodes["System Node Pool"]
-                    direction LR
-                    ArgoCD["ArgoCD"]
-                    Kong["Kong Gateway"]
-                    LBC["LB Controller"]
-                end
-
-                subgraph UserNodes["User Node Pool"]
-                    direction LR
-                    App1["App 1"]
-                    App2["App 2"]
-                    API["Users API"]
-                end
-            end
-        end
-    end
-
-    CF -->|"TLS 1 (ACM)"| VPCOrigin
-    VPCOrigin --> NLB
-    NLB -->|"TLS 2 (Kong Cert)"| Kong
-    Kong --> App1
-    Kong --> App2
-    Kong --> API
-    UserNodes --> NAT
-```
-
-| Node Pool | Taint | Workloads |
-|-----------|-------|-----------|
-| System Nodes | CriticalAddonsOnly | ArgoCD, Kong components, AWS LB Controller |
-| User Nodes | None | Application workloads (app1, app2, users-api) |
-
----
-
-## Defense in Depth
+## Security
 
 Security is applied at every layer. WAF handles infrastructure threats at the edge, Kong plugins handle application/API concerns inside the cluster.
 
@@ -851,134 +727,26 @@ kubectl port-forward svc/argocd-server -n argocd 8080:443
 
 ## Kong Konnect Platform Overview
 
-Kong Konnect is a unified API platform that provides centralized management for APIs, LLMs, events, and microservices. It combines a cloud-hosted control plane with flexible data plane deployment options.
-
-### Konnect Applications & Features
-
-#### 1. API Gateway Management
-- **Control Plane Management**: Centralized configuration for all Kong Gateway instances
-- **Data Plane Monitoring**: Real-time health and status of all connected data planes
-- **Configuration Sync**: Automatic propagation of routes, services, and plugins to data planes
-- **Version Compatibility**: Control planes support data planes with the same major version
-
-#### 2. Konnect Observability (Analytics)
-Real-time, highly contextual analytics platform providing deep insights into API health, performance, and usage.
+Kong Konnect is a unified API platform that provides centralized management for APIs, LLMs, events, and microservices. It combines a cloud-hosted control plane with flexible data plane deployment options. **This demo uses Self-Hosted data planes on EKS.**
 
 | Capability | Description |
 |------------|-------------|
-| **Traffic Metrics** | Request counts, throughput, and bandwidth analytics |
-| **Latency Analysis** | P50, P95, P99 latency percentiles with breakdown |
-| **Error Tracking** | 4xx/5xx error rates with detailed error codes |
-| **Consumer Analytics** | Per-consumer usage patterns and quotas |
-| **Custom Dashboards** | Build custom dashboards with saved queries |
-| **API Request Logs** | Near real-time access to detailed request records |
-
-#### 3. Developer Portal
-A customizable website for developers to locate, access, and consume API services.
-
-| Feature | Description |
-|---------|-------------|
-| **API Discovery** | Searchable catalog of available APIs |
-| **Interactive Docs** | OpenAPI/Swagger-based "Try It Out" functionality |
-| **Self-Service Registration** | Developers can self-register for API access |
-| **API Key Management** | Self-service API key generation and rotation |
-| **Application Management** | Developers manage their own applications |
-| **Customization** | Full portal theming and branding support |
-
-#### 4. Service Catalog
-Centralized catalog of all services running in your organization.
-
-- Automatic service discovery from multiple sources
-- Integration with Konnect Analytics for service health
-- Service ownership and documentation management
-- Cross-reference with Developer Portal APIs
-
-#### 5. Kong Identity
-OAuth 2.0 and OpenID Connect identity provider for machine-to-machine authentication.
-
-```mermaid
-%%{init: {'theme': 'neutral'}}%%
-sequenceDiagram
-    participant Client as Client App
-    participant Identity as Kong Identity
-    participant Gateway as Kong Gateway
-    participant API as Backend API
-
-    Client->>Identity: Request access token
-    Identity->>Identity: Validate credentials
-    Identity-->>Client: Access token + expiry
-    Client->>Gateway: API request + token
-    Gateway->>Identity: Validate token
-    Identity-->>Gateway: Token valid
-    Gateway->>API: Forward request
-    API-->>Client: Response
-```
-
-**Supported Plugins:**
-- OpenID Connect plugin
-- OAuth 2.0 Introspection plugin
-- Upstream OAuth plugin
-
-#### 6. Metering & Billing
-Full system for tracking real-time usage, pricing products, enforcing entitlements, and generating invoices.
-
-#### 7. Konnect Debugger
-Real-time trace-level visibility into API traffic for troubleshooting.
-
-| Feature | Description |
-|---------|-------------|
-| **On-Demand Tracing** | Targeted deep traces on specific data planes |
-| **Request Lifecycle** | Visualize entire request processing pipeline |
-| **Plugin Execution** | See order and timing of all plugin executions |
-| **Sampling Criteria** | Filter traces by method, path, status, latency |
-| **Log Correlation** | Traces correlated with Kong Gateway logs |
-| **7-Day Retention** | Debug sessions retained for up to 7 days |
+| **API Gateway Management** | Centralized configuration, data plane monitoring, automatic config sync |
+| **Observability (Analytics)** | Traffic metrics, latency percentiles (P50/P95/P99), error tracking, consumer analytics |
+| **Developer Portal** | API discovery, interactive docs, self-service registration, API key management |
+| **Service Catalog** | Automatic service discovery, ownership management, cross-reference with portal |
+| **Kong Identity** | OAuth 2.0 and OIDC identity provider for machine-to-machine authentication |
+| **Metering & Billing** | Usage tracking, pricing, entitlement enforcement, invoicing |
+| **Debugger** | On-demand tracing, request lifecycle visualization, plugin execution timing |
+| **AI Gateway** | AI rate limiting, prompt guard, multi-LLM provider support, MCP tool aggregation |
 
 ### Data Plane Hosting Options
-
-Kong Konnect supports multiple data plane hosting options:
 
 | Option | Description | Best For |
 |--------|-------------|----------|
 | **Dedicated Cloud Gateways** | Fully-managed by Kong in AWS, Azure, or GCP | Zero-ops, automatic scaling |
 | **Serverless Gateways** | Lightweight, auto-provisioned gateways | Dev/test, rapid experimentation |
 | **Self-Hosted** | Deploy on your infrastructure (K8s, VMs, bare metal) | Data sovereignty, compliance |
-
-**This demo uses Self-Hosted data planes on EKS.**
-
-### Supported Geographic Regions
-
-Konnect Control Planes are available in these regions:
-
-| Region | Code | API Endpoint |
-|--------|------|--------------|
-| United States | `us` | `us.api.konghq.com` |
-| Europe | `eu` | `eu.api.konghq.com` |
-| Australia | `au` | `au.api.konghq.com` |
-| Middle East | `me` | `me.api.konghq.com` |
-| India | `in` | `in.api.konghq.com` |
-| Singapore (Beta) | `sg` | `sg.api.konghq.com` |
-
-### AI Gateway Capabilities
-
-Kong AI Gateway is built on top of Kong Gateway, designed for AI/LLM adoption:
-
-- **AI Rate Limiting**: Rate limit by tokens, requests, or cost
-- **AI Prompt Guard**: Filter and moderate prompts
-- **AI Request Transformer**: Transform requests for different LLM providers
-- **Multi-Provider Support**: OpenAI, Anthropic, Azure OpenAI, and more
-- **MCP Tool Aggregation**: Aggregate MCP tools from multiple sources
-
-### Security & Compliance
-
-| Feature | Description |
-|---------|-------------|
-| **SSO/SAML/OIDC** | Enterprise identity provider integration |
-| **Teams & Roles** | RBAC with custom teams and permissions |
-| **Audit Logging** | Comprehensive audit logs for Konnect and Dev Portal |
-| **CMEK** | Customer-Managed Encryption Keys |
-| **Data Localization** | Geo-specific data storage and processing |
-| **Multi-Geo Federation** | Federated API management across regions |
 
 ### Management Tools
 
@@ -988,7 +756,8 @@ Kong AI Gateway is built on top of Kong Gateway, designed for AI/LLM adoption:
 | **Terraform Provider** | Infrastructure as Code for Konnect resources |
 | **Kong Ingress Controller** | Kubernetes-native configuration via CRDs |
 | **Konnect APIs** | Full programmatic control over all Konnect features |
-| **KAi** | Kong's AI assistant for issue detection and fixes |
+
+> For full details on each capability, see the [Kong Konnect documentation](https://developer.konghq.com/konnect/).
 
 ---
 
