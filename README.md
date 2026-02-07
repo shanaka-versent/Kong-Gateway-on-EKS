@@ -431,6 +431,8 @@ config:
 plugin: jwt
 ```
 
+A demo consumer (`demo-user`) with HMAC-SHA256 credentials is deployed automatically via ArgoCD from `k8s/apps/api/jwt-auth.yaml`. Generate a test token with `./scripts/02-generate-jwt.sh`.
+
 ### CORS
 ```yaml
 apiVersion: configuration.konghq.com/v1
@@ -700,8 +702,14 @@ curl ${CF_URL}/app1
 # Test App 2 (no plugins)
 curl ${CF_URL}/app2
 
-# Test Users API (with rate limiting)
-curl ${CF_URL}/api/users
+# Test Users API - without token (expect 401 Unauthorized)
+curl -i ${CF_URL}/api/users
+
+# Generate a JWT token for the demo-user consumer
+TOKEN=$(./scripts/02-generate-jwt.sh | grep -A1 "^Token:" | tail -1)
+
+# Test Users API - with valid token (expect 200 OK)
+curl -H "Authorization: Bearer ${TOKEN}" ${CF_URL}/api/users
 
 # Test health endpoint
 curl ${CF_URL}/healthz/ready

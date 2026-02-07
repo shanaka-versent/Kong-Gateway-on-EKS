@@ -2,7 +2,7 @@
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
 # Routes /api/users/* paths to the users-api service.
-# Applies Kong plugins for rate limiting and request transformation.
+# Applies Kong plugins for JWT auth, rate limiting, and request transformation.
 
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -11,7 +11,7 @@ metadata:
   namespace: api
   annotations:
     # Kong plugins to apply to this route
-    konghq.com/plugins: "rate-limiting,request-transformer,cors"
+    konghq.com/plugins: "jwt-auth,rate-limiting,request-transformer,cors"
 spec:
   parentRefs:
     - name: kong-gateway

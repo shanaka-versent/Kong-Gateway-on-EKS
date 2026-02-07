@@ -1,0 +1,48 @@
+# JWT Authentication for Users API
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# Protects /api/users with JWT Bearer token authentication.
+# Unauthenticated requests receive HTTP 401.
+#
+# Demo flow:
+#   1. Generate token: ./scripts/02-generate-jwt.sh
+#   2. curl -H "Authorization: Bearer <token>" /api/users
+
+# JWT Plugin - validates Bearer tokens, verifies expiration
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: jwt-auth
+  namespace: api
+config:
+  claims_to_verify:
+    - exp
+plugin: jwt
+
+---
+# Demo API Consumer
+apiVersion: configuration.konghq.com/v1
+kind: KongConsumer
+metadata:
+  name: demo-user
+  namespace: api
+  annotations:
+    kubernetes.io/ingress.class: kong
+username: demo-user
+
+---
+# JWT Credential (HMAC-SHA256) for demo-user
+# The 'key' field becomes the required 'iss' claim in the JWT.
+# For POC/demo purposes only - do not use this secret in production.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: demo-user-jwt
+  namespace: api
+  labels:
+    konghq.com/credential: jwt
+stringData:
+  algorithm: HS256
+  key: demo-issuer
+  secret: demo-secret-key-do-not-use-in-production
+  kongConsumerName: demo-user
