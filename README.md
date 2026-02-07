@@ -11,9 +11,18 @@ Both Istio and Kong implement the **Kubernetes Gateway API** standard for north-
 
 In short: Istio Gateway gives you K8s Gateway API routing. Kong Gateway gives you K8s Gateway API routing **plus** API management — without needing a separate API gateway service.
 
+### Two Architectural Options for Kong API Management
+
+This POC implements **Option 1** below. The [Appendix](#appendix-kong-as-an-external-api-management-layer) explores Option 2.
+
+| Option | Description | Best For |
+|--------|-------------|----------|
+| **Option 1: Kong Gateway on K8s** (this repo) | Kong is deployed **inside the EKS cluster** as both the K8s Gateway API implementation and the API management layer. A single component handles ingress routing, authentication, rate limiting, and all API policies | Teams whose APIs are primarily hosted on Kubernetes and want a single in-cluster component for both routing and API management |
+| **Option 2: Kong Gateway External to K8s** ([Appendix](#appendix-kong-as-an-external-api-management-layer)) | Kong is deployed **outside the EKS cluster** (on EC2/ECS or as a Kong Konnect Dedicated Cloud Gateway) as a centralised API management layer. Istio handles K8s Gateway API routing inside the cluster, while Kong manages APIs externally | Teams that need to expose and manage APIs hosted **both on and outside Kubernetes** (EC2, ECS, Lambda, third-party services) through a single unified API management layer |
+
 > **Licensing:** This project uses **Kong Gateway Enterprise** (`kong/kong-gateway` image) with licensing automatically managed by Kong Konnect. A [free trial](https://konghq.com/products/kong-konnect/register) gives you 30 days of full Enterprise functionality. An [OSS alternative](#alternative-kong-gateway-oss-without-konnect) is available if you don't have a Konnect subscription.
 
-This is particularly relevant for teams who:
+This implementation (Option 1) is particularly relevant for teams who:
 - Need full API management (rate limiting, authentication, developer portal) built into the K8s Gateway API implementation — not as a separate service
 - Want a single component that handles both ingress routing and API gateway concerns
 - Are already using or evaluating Kong for API management
@@ -1225,8 +1234,8 @@ flowchart TB
 
 | Security Aspect | Option 1: Self-Hosted in VPC | Option 2: Kong Cloud Gateway |
 |-----------------|------------------------------|------------------------------|
-| **Kong has a public endpoint?** | ❌ No — private subnets, no public IP | ✅ Yes — `*.gateway.konghq.com` |
-| **Can someone bypass CloudFront?** | ❌ Impossible — Kong is unreachable from internet | ⚠️ Possible without mitigation — requires shared secret header or mTLS |
+| **Kong has a public endpoint?** | No — private subnets, no public IP | Yes — `*.gateway.konghq.com` |
+| **Can someone bypass CloudFront?** | Impossible — Kong is unreachable from internet | Possible without mitigation — requires shared secret header or mTLS |
 | **CloudFront → Kong path** | Fully private (VPC Origin → PrivateLink → NLB) | Public HTTPS (CloudFront → Kong public endpoint) |
 | **Network-level isolation** | VPC + Security Groups + no public route | Relies on application-layer controls (headers, mTLS) |
 | **Bypass prevention mechanism** | Infrastructure-level (no public endpoint exists) | Application-level (shared secret header / mTLS) |
