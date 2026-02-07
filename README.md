@@ -175,6 +175,69 @@ Client --> CloudFront + WAF --> VPC Origin --> Internal NLB --> Kong Gateway -->
 
 ---
 
+## End-to-End Traffic Flow
+
+The architecture implements **TLS termination at the CloudFront edge** with fully private internal connectivity. All traffic from CloudFront to Kong Gateway travels over the AWS backbone via VPC Origin (PrivateLink) — no public endpoints are exposed.
+
+```mermaid
+%%{init: {'theme': 'neutral'}}%%
+sequenceDiagram
+    participant Client
+    participant CF as CloudFront<br/>(Edge + WAF)
+    participant VPC as VPC Origin<br/>(PrivateLink)
+    participant NLB as Internal NLB<br/>(Private Subnet)
+    participant Kong as Kong Gateway<br/>(Pod)
+    participant Plugin as Kong Plugins<br/>(Rate Limit, Auth)
+    participant App as Backend App<br/>(Pod)
+
+    Note over Client,CF: TLS Session (Edge)
+    Client->>+CF: HTTPS :443<br/>TLS with ACM Certificate
+    CF->>CF: TLS Termination<br/>+ WAF Inspection
+
+    Note over CF,NLB: Private Backbone (No Public Endpoint)
+    CF->>+VPC: HTTP :80<br/>AWS Backbone
+    VPC->>+NLB: HTTP :80<br/>PrivateLink ENI
+
+    Note over NLB,App: Kubernetes Cluster (Private)
+    NLB->>+Kong: HTTP :8000<br/>TargetGroupBinding
+    Kong->>Plugin: Execute Plugin Chain
+    Plugin->>Plugin: Rate Limiting<br/>Request Transform<br/>CORS / Auth
+    Plugin->>Kong: Continue
+    Kong->>+App: HTTP :8080<br/>HTTPRoute Match
+    App-->>-Kong: Response
+    Kong-->>-NLB: Response
+    NLB-->>-VPC: Response
+    VPC-->>-CF: Response
+    CF-->>-Client: HTTPS Response
+```
+
+### Traffic Security Layers
+
+| Segment | Security | Details |
+|---------|----------|---------|
+| **Client → CloudFront** | TLS (ACM Certificate) | HTTPS terminated at edge; trusted public certificate via AWS Certificate Manager |
+| **CloudFront WAF** | AWS WAF Managed Rules | SQLi, XSS, bad inputs, rate limiting applied before traffic enters VPC |
+| **CloudFront → NLB** | VPC Origin (PrivateLink) | Traffic travels over AWS backbone — no internet exposure, no public NLB |
+| **NLB → Kong Gateway** | Private subnet + Security Group | NLB SG allows only CloudFront prefix list; Kong pods registered via TargetGroupBinding |
+| **Kong Gateway** | Kong Plugin Chain | Rate limiting, request transformation, CORS, authentication per-route |
+| **Kong → Backend** | Cluster-internal HTTP | HTTPRoute-based routing to backend services on port 8080 |
+
+### Why VPC Origin (Not ALB)?
+
+This architecture uses **CloudFront VPC Origin** (launched Nov 2024) instead of the traditional ALB pattern:
+
+| Aspect | Traditional (ALB) | This Project (VPC Origin) |
+|--------|--------------------|---------------------------|
+| **Public endpoints** | ALB is publicly accessible | No public endpoints at all |
+| **Connectivity** | Internet-routed to ALB | AWS backbone via PrivateLink |
+| **Security** | ALB SG + WAF | CloudFront prefix list SG only |
+| **Header verification** | Requires custom header checks | Not needed — PrivateLink is tamper-proof |
+| **Cost** | ALB + NLB | NLB only |
+
+> **Note:** Since all internal traffic is over private VPC networking (PrivateLink + private subnets), HTTP is used internally. For environments requiring encryption in transit within the VPC, Kong Gateway supports TLS listeners — add a `tls` listener to the Gateway resource and configure the corresponding certificate secret.
+
+---
+
 ## How Kong Implements the Kubernetes Gateway API
 
 Kong Gateway implements the Kubernetes Gateway API **exactly like Istio does**. The architecture is directly comparable:
