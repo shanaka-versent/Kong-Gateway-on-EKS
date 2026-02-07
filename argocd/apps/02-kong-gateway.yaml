@@ -45,6 +45,9 @@ spec:
           # Required for Konnect integration
           gatewayDiscovery:
             enabled: true
+            adminApiService:
+              name: "kong-gateway-kong-admin"
+              namespace: "kong"
           # KIC 3.x native Konnect integration
           konnect:
             enabled: true
@@ -70,9 +73,14 @@ spec:
             containerPort: 8443
             servicePort: 443
 
-        # Admin API (disabled - managed via Konnect)
+        # Admin API (internal ClusterIP - required for KIC gateway discovery)
         admin:
-          enabled: false
+          enabled: true
+          type: ClusterIP
+          http:
+            enabled: true
+            containerPort: 8001
+            servicePort: 8001
 
         # Status endpoint
         status:
