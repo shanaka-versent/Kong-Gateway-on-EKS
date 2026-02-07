@@ -1054,21 +1054,24 @@ If you're already using **Istio Gateway** as your K8s Gateway API implementation
 ```mermaid
 %%{init: {'theme': 'neutral'}}%%
 flowchart TB
-    Client["Client"]
+    Client["Client (HTTPS)"]
 
-    subgraph Edge["CloudFront / Front Door"]
+    subgraph Edge["CloudFront + AWS WAF"]
         direction LR
-        CDN["CDN + WAF"]
+        WAF["AWS WAF<br/>OWASP Top 10 · IP Reputation<br/>Geo Blocking · Rate Limiting"]
+        CDN["CloudFront<br/>TLS Termination (ACM)"]
     end
 
-    subgraph VPC["VPC / VNet — Private Subnets"]
-        NLB["Internal NLB"]
+    VPCOrigin["VPC Origin<br/>(AWS PrivateLink)"]
+
+    subgraph VPC["VPC — Private Subnets Only"]
+        NLB["Internal NLB<br/>(No Public IP)"]
 
         subgraph EKS["EKS Cluster"]
 
             subgraph KongNS["kong namespace"]
-                KongGW["Kong Gateway<br/>(API Management Only)"]
-                Plugins["Kong Plugins<br/>Rate Limit · Auth · Transforms"]
+                KongGW["Kong Gateway :443<br/>(API Management Only)<br/>TLS Termination"]
+                Plugins["Kong Plugins<br/>Auth · Rate Limit · Transforms"]
             end
 
             subgraph IstioNS["istio-ingress namespace"]
@@ -1088,9 +1091,11 @@ flowchart TB
         Portal["Dev Portal"]
     end
 
-    Client --> CDN
-    CDN --> NLB
-    NLB --> KongGW
+    Client -->|"TLS 1 (ACM Cert)"| CDN
+    CDN --> WAF
+    WAF -->|"Private"| VPCOrigin
+    VPCOrigin -->|"Private"| NLB
+    NLB -->|"TLS 2 (Kong Cert)"| KongGW
     KongGW --> Plugins
     Plugins --> IstioGW
     IstioGW --> HR
@@ -1098,21 +1103,48 @@ flowchart TB
     KongGW -.-> Konnect
 ```
 
-### How It Works
+### Private Connectivity & Security Layers
 
-| Layer | Component | Role |
-|-------|-----------|------|
-| **API Management** | Kong Gateway | Rate limiting, authentication (JWT, OAuth, OIDC), request transforms, CORS, API key management |
-| **K8s Gateway API Routing** | Istio Gateway | GatewayClass, Gateway, HTTPRoute — routes traffic to backend services |
-| **Service Mesh** | Istio Ambient | East-west mTLS between services (optional, independent of north-south) |
-| **Management Plane** | Kong Konnect (SaaS) | Centralized analytics, developer portal, plugin management, multi-cluster visibility |
+The architecture uses the same private connectivity pattern as this repo's main architecture — **no public endpoints** are exposed inside the VPC:
+
+| Layer | Component | Security Role |
+|-------|-----------|---------------|
+| **WAF** | AWS WAF (at CloudFront) | OWASP Top 10 protection, IP reputation filtering, geo-blocking, L7 rate limiting, bot detection. Applied **before** traffic enters the VPC |
+| **TLS Session 1** | CloudFront (ACM certificate) | Client-facing TLS termination. Public certificate from AWS Certificate Manager |
+| **Private Link** | CloudFront VPC Origin (PrivateLink) | CloudFront connects to Internal NLB over AWS backbone — traffic **never traverses the public internet** |
+| **Internal NLB** | Network Load Balancer (private subnets) | No public IP. Security group restricts ingress to CloudFront prefix list only (`com.amazonaws.global.cloudfront.origin-facing`) |
+| **TLS Session 2** | Kong Gateway (port 443) | Re-encrypts traffic from NLB to Kong. Self-signed or private CA certificate (`kong-gateway-tls` secret) |
+| **API Management** | Kong Plugins | Authentication (JWT, OAuth, OIDC), per-route rate limiting, request transforms, CORS — applied **inside the cluster** after WAF |
+| **K8s Routing** | Istio Gateway + HTTPRoutes | Gateway API routing to backend services. Istio handles GatewayClass/Gateway/HTTPRoute |
+| **Service Mesh** | Istio Ambient (optional) | East-west mTLS between services — independent of north-south path |
+| **Management Plane** | Kong Konnect (SaaS) | Analytics, developer portal, plugin management — connected outbound from Kong, not in the traffic path |
+
+### WAF + Kong: Complementary, Not Redundant
+
+AWS WAF and Kong plugins operate at **different layers** and serve **different purposes**:
+
+| Concern | AWS WAF (Edge) | Kong Plugins (In-Cluster) |
+|---------|----------------|---------------------------|
+| **When applied** | Before traffic enters VPC | After traffic reaches the cluster |
+| **OWASP protection** | ✅ SQL injection, XSS, etc. | ❌ Not its job |
+| **Bot detection** | ✅ AWS Bot Control | ❌ |
+| **Geo-blocking** | ✅ Country-level | ❌ |
+| **IP reputation** | ✅ AWS Managed Rules | ❌ |
+| **API authentication** | ❌ | ✅ JWT, OAuth, OIDC, API keys |
+| **Per-route rate limiting** | Basic (IP-based) | ✅ Per-consumer, per-route |
+| **Request transforms** | ❌ | ✅ Add headers, rewrite paths |
+| **API-specific policies** | ❌ | ✅ Per-API plugin configuration |
+
+> **WAF stops malicious traffic at the edge before it consumes cluster resources. Kong handles API-specific policies that require application context (who is the consumer, which API, what plan).**
 
 ### What Changes vs AWS API Gateway?
 
 | Aspect | AWS API Gateway | Kong Gateway |
 |--------|-----------------|--------------|
 | **Deployment** | AWS-managed service (outside K8s) | Deployed inside K8s (same cluster as Istio) |
-| **Connectivity** | VPC Link to NLB | Direct pod-to-pod within cluster |
+| **Connectivity to NLB** | VPC Link (managed by AWS) | Same VPC — NLB targets Kong pods directly |
+| **Private integration** | API GW → VPC Link → NLB | CloudFront → VPC Origin → NLB → Kong |
+| **WAF** | Can attach WAF to API GW or CloudFront | WAF stays at CloudFront (Kong is internal) |
 | **Auth** | Lambda Authorizers | Built-in plugins (JWT, OAuth, OIDC, API keys) |
 | **Rate Limiting** | Usage Plans | KongPlugin (per-route, per-consumer) |
 | **Developer Portal** | Not built-in | Kong Konnect Dev Portal |
