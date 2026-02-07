@@ -62,7 +62,9 @@ spec:
           enabled: true
           type: ClusterIP  # NLB is Terraform-managed, not auto-created
           http:
-            enabled: false
+            enabled: true
+            containerPort: 8000
+            servicePort: 80
           tls:
             enabled: true
             containerPort: 8443

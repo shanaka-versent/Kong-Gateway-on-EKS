@@ -130,7 +130,7 @@ module "nlb" {
   vpc_id             = module.vpc.vpc_id
   vpc_cidr           = var.vpc_cidr
   private_subnet_ids = module.vpc.private_subnet_ids
-  health_check_path  = "/healthz/ready"
+  health_check_path  = "/status"
   health_check_port  = 8100
   tags               = var.tags
 }
@@ -204,7 +204,7 @@ resource "kubernetes_manifest" "target_group_binding" {
       targetGroupARN = module.nlb[0].target_group_arn
       targetType     = "ip"
       serviceRef = {
-        name = "kong-kong-proxy" # Kong Helm chart proxy service name
+        name = "kong-gateway-kong-proxy" # Kong Helm chart proxy service (release: kong-gateway)
         port = 443
       }
       networking = {
