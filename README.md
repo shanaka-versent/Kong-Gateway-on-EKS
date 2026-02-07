@@ -569,25 +569,6 @@ flowchart LR
 
 ---
 
-## Kong Gateway Editions & Licensing
-
-Kong Gateway comes in two editions. This project defaults to Enterprise via Konnect:
-
-| | Kong Gateway Enterprise (Default) | Kong Gateway OSS (Alternative) |
-|---|---|---|
-| **Docker Image** | `kong/kong-gateway` | `kong/kong` |
-| **License** | Automatically managed by Konnect | No license needed |
-| **Enterprise Plugins** | OpenID Connect, OAuth2 Introspection, mTLS, Vault, OPA, etc. | Not available |
-| **Analytics** | Konnect Observability (real-time dashboards) | Self-managed (Prometheus/Grafana) |
-| **Developer Portal** | Built-in via Konnect | Not available |
-| **Admin UI** | Kong Manager + Konnect Dashboard | Kong Manager (limited) |
-| **Gateway API Support** | Full (GatewayClass, Gateway, HTTPRoute) | Full (GatewayClass, Gateway, HTTPRoute) |
-| **Cost** | Free trial (30 days) → Plus or Enterprise tier | Free forever |
-
-> **Recommendation:** Start with the [Konnect free trial](https://konghq.com/products/kong-konnect/register) to get Enterprise features with zero license management. See the [OSS alternative](#alternative-kong-gateway-oss-without-konnect) section if you prefer to run without Konnect.
-
----
-
 ## Prerequisites
 
 - AWS CLI configured with appropriate credentials
