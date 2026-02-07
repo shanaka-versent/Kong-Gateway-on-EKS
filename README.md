@@ -2,13 +2,13 @@
 
 This POC demonstrates how to implement Kubernetes Gateway API on AWS EKS with **Kong Gateway Enterprise**, integrated with **Kong Konnect** for centralized API management, analytics, and developer portal.
 
-While my previous posts used Istio as the Gateway API implementation, Kong Gateway offers a different approach—focusing on API gateway capabilities at the edge without the service mesh complexity.
+While my previous posts used Istio as the Gateway API implementation, Kong Gateway offers a different approach—focusing on API gateway capabilities (north-south traffic) at the edge. Note that API management and service mesh address different concerns: Kong handles north-south (edge) traffic, while a service mesh like Istio handles east-west (service-to-service) traffic. Both Istio and Kong implement the Kubernetes Gateway API standard, and they can be used together.
 
 > **Licensing:** This project uses **Kong Gateway Enterprise** (`kong/kong-gateway` image) with licensing automatically managed by Kong Konnect. A [free trial](https://konghq.com/products/kong-konnect/register) gives you 30 days of full Enterprise functionality. An [OSS alternative](#alternative-kong-gateway-oss-without-konnect) is available if you don't have a Konnect subscription.
 
 This is particularly relevant for teams who:
-- Need API management features (rate limiting, authentication, developer portal) without a full service mesh
-- Want a simpler operational model (no sidecars)
+- Need API management features (rate limiting, authentication, developer portal) at the edge — independently of whether a service mesh is used for east-west traffic
+- Want a Kubernetes Gateway API implementation with built-in API management capabilities
 - Are already using or evaluating Kong for API management
 - Need to expose both APIs and web applications through the same gateway
 
