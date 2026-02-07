@@ -1045,13 +1045,13 @@ If you don't have a Kong Konnect subscription and don't need Enterprise features
 
 ---
 
-## Appendix: Kong as an External API Management Layer (Replacing AWS API Gateway)
+## Appendix: Kong as an External API Management Layer
 
-In the [Istio POC architecture](https://github.com/shanaka-versent/EKS-Istio-GatewayAPI-Deom/tree/k8s-gateway-api-poc), **AWS API Gateway** sits **outside** the EKS cluster as a separate API management layer — it is not deployed inside K8s. Can Kong do the same? **Yes.** Kong Gateway can be deployed on **separate compute (EC2/ECS) in your VPC** — outside the EKS cluster but inside your private network — giving you the same external API management position as AWS API Gateway, with **fully private connectivity and no public endpoints**.
+When you have APIs running on **multiple platforms** — some on Kubernetes (managed by Istio Gateway), some on EC2/ECS, some on Lambda or third-party services — deploying Kong Gateway **outside** the EKS cluster as a **centralised API management layer** gives you a single entry point with consistent policies across all backends.
 
-Alternatively, Kong Konnect provides **Dedicated Cloud Gateways** — fully managed instances on Kong's infrastructure — but this introduces a public endpoint (see [deployment options](#deployment-options-for-kong-outside-the-cluster) for the security trade-offs).
+Kong Gateway can be deployed on **separate compute (EC2/ECS) in your VPC** — outside the EKS cluster but inside your private network — with **fully private connectivity and no public endpoints**. Alternatively, Kong Konnect provides **Dedicated Cloud Gateways** — fully managed instances on Kong's infrastructure — but this introduces a public endpoint (see [deployment options](#deployment-options-for-kong-outside-the-cluster) for the security trade-offs).
 
-### Kong for API Management with Istio Gateway (Similar to AWS API Gateway)
+### Kong for API Management with Istio Gateway
 
 The recommended approach is to deploy Kong on **separate compute in your VPC** — outside the EKS cluster but still in private subnets. CloudFront connects via **VPC Origin (PrivateLink)**, making Kong completely unreachable from the public internet:
 
@@ -1079,7 +1079,13 @@ flowchart TB
         subgraph EKS["EKS Cluster"]
             IstioGW["Istio Gateway<br/>(K8s Gateway API)"]
             HR["HTTPRoutes"]
-            Apps["Backend Services"]
+            K8sApps["K8s Backend Services"]
+        end
+
+        subgraph NonK8s["Non-K8s Backends (Same VPC)"]
+            EC2Apps["EC2 / ECS Services"]
+            Lambda["Lambda Functions"]
+            ThirdParty["Third-Party APIs"]
         end
     end
 
@@ -1097,23 +1103,25 @@ flowchart TB
     NLB1 -->|"TLS 2 (Kong Cert)"| KongGW
     KongGW --> Plugins
     Plugins --> NLB2
+    Plugins --> NonK8s
     NLB2 --> IstioGW
     IstioGW --> HR
-    HR --> Apps
+    HR --> K8sApps
     KongGW -.->|"Outbound Only"| KonnectSaaS
 ```
 
 ### Where Does Each Layer Sit?
 
-| Layer | AWS API Gateway (Current) | Kong Replacement | Location |
-|-------|---------------------------|------------------|----------|
-| **CDN + WAF** | CloudFront + AWS WAF | CloudFront + AWS WAF (unchanged) | AWS Edge |
-| **API Management** | AWS API Gateway (managed, public endpoint) | **Kong Gateway on EC2/ECS** (self-hosted, **no public endpoint**) | **Your VPC — private subnets** (outside EKS but inside your network) |
-| **Management Plane** | AWS Console / CloudWatch | **Kong Konnect SaaS** — analytics, dev portal, centralized config | Kong's SaaS at `cloud.konghq.com` (outbound only) |
-| **CloudFront → API Mgmt** | Public HTTPS to API GW endpoint | **VPC Origin (PrivateLink)** → Internal NLB → Kong — fully private | AWS backbone (private) |
-| **API Mgmt → K8s** | VPC Link → NLB | Internal NLB → Istio Gateway — same VPC | Private subnets |
-| **K8s Gateway API** | Istio Gateway | Istio Gateway (unchanged) | Inside the EKS cluster |
-| **Service Mesh** | Istio Ambient (optional) | Istio Ambient (unchanged) | Inside the EKS cluster |
+| Layer | Component | Location |
+|-------|-----------|----------|
+| **CDN + WAF** | CloudFront + AWS WAF | AWS Edge |
+| **API Management** | Kong Gateway on EC2/ECS (**no public endpoint**) | Your VPC — private subnets (outside EKS, inside your network) |
+| **Management Plane** | Kong Konnect SaaS — analytics, dev portal, centralized config | Kong SaaS at `cloud.konghq.com` (outbound only) |
+| **CloudFront → Kong** | VPC Origin (PrivateLink) → Internal NLB → Kong | AWS backbone (fully private) |
+| **Kong → K8s** | Internal NLB → Istio Gateway | Same VPC, private subnets |
+| **Kong → Non-K8s** | Direct upstream routing to EC2, ECS, Lambda, or external services | Same VPC or via PrivateLink |
+| **K8s Gateway API** | Istio Gateway + HTTPRoutes | Inside the EKS cluster |
+| **Service Mesh** | Istio Ambient (optional) | Inside the EKS cluster |
 
 ### Deployment Options for Kong Outside the Cluster
 
@@ -1183,7 +1191,7 @@ flowchart TB
 
 #### Option 2: Kong Konnect Dedicated Cloud Gateways (Managed by Kong)
 
-Fully managed Kong data plane instances hosted on **Kong's infrastructure** (outside your AWS account). This is architecturally similar to how AWS API Gateway works — both are managed services with public endpoints.
+Fully managed Kong data plane instances hosted on **Kong's infrastructure** (outside your AWS account). This is a managed service with a public endpoint — Kong provisions, scales, and maintains the gateway for you.
 
 ```mermaid
 %%{init: {'theme': 'neutral'}}%%
@@ -1223,18 +1231,18 @@ flowchart TB
     KongGW -.-> KonnectSaaS
 ```
 
-**The bypass problem:** Kong Cloud Gateway has a **public endpoint** (`*.gateway.konghq.com`) — just like AWS API Gateway has a public endpoint. Someone could potentially hit Kong directly, bypassing CloudFront and WAF.
+**The bypass problem:** Kong Cloud Gateway has a **public endpoint** (`*.gateway.konghq.com`). Someone could potentially hit Kong directly, bypassing CloudFront and WAF.
 
-**Bypass prevention (same techniques used with AWS API Gateway):**
+**Bypass prevention techniques:**
 
 | Technique | How It Works | Strength |
 |-----------|-------------|----------|
-| **Custom Origin Header (Shared Secret)** | CloudFront adds a secret header (e.g., `X-CF-Secret: <random-value>`) to every origin request. Kong validates it using the `request-termination` or `pre-function` plugin — rejects requests missing the header | ⭐⭐⭐ Standard approach. Same as CloudFront + API Gateway pattern. Secret should be rotated via Secrets Manager |
+| **Custom Origin Header (Shared Secret)** | CloudFront adds a secret header (e.g., `X-CF-Secret: <random-value>`) to every origin request. Kong validates it using the `request-termination` or `pre-function` plugin — rejects requests missing the header | ⭐⭐⭐ Standard approach. Secret should be rotated via Secrets Manager |
 | **Mutual TLS (mTLS)** | CloudFront sends a client certificate to Kong. Kong validates the client cert before accepting the request | ⭐⭐⭐⭐ Cryptographic verification. Harder to spoof than headers. Requires CloudFront origin SSL client cert support |
 | **IP Allowlisting** | Kong only accepts requests from CloudFront's IP ranges (published by AWS in `ip-ranges.json`) | ⭐⭐ Supplementary. CloudFront IPs are shared across all customers, so this alone isn't sufficient |
 | **Kong ACL Plugin** | Combine authentication (API key / JWT) with ACL groups to restrict access to CloudFront's identity | ⭐⭐⭐ Application-layer control, managed entirely in Kong |
 
-> **Important:** This is the **exact same challenge** as CloudFront + AWS API Gateway. AWS API Gateway also has a public endpoint. The standard mitigation is the **custom origin header** pattern — CloudFront injects a secret header, and the backend validates it. Kong handles this natively with plugins.
+> **Important:** Any managed service with a public endpoint faces this challenge. The standard mitigation is the **custom origin header** pattern — CloudFront injects a secret header, and the backend validates it. Kong handles this natively with plugins.
 
 ### Comparison: Which Option Is More Secure?
 
@@ -1245,7 +1253,6 @@ flowchart TB
 | **CloudFront → Kong path** | Fully private (VPC Origin → PrivateLink → NLB) | Public HTTPS (CloudFront → Kong public endpoint) |
 | **Network-level isolation** | VPC + Security Groups + no public route | Relies on application-layer controls (headers, mTLS) |
 | **Bypass prevention mechanism** | Infrastructure-level (no public endpoint exists) | Application-level (shared secret header / mTLS) |
-| **Same security model as** | This repo's main architecture | AWS API Gateway (same public endpoint challenge) |
 | **Operational overhead** | You manage EC2/ECS compute, patching, scaling | Kong manages everything |
 | **Kong → EKS connectivity** | Same VPC — NLB in private subnets | PrivateLink / VPC Peering from Kong's infra to your VPC |
 
@@ -1263,14 +1270,10 @@ flowchart TB
 
 ### WAF Placement
 
-| Pattern | WAF Location | Why |
-|---------|-------------|-----|
-| **CloudFront + AWS API Gateway** | WAF attached to CloudFront **or** API Gateway (or both) | AWS API GW natively supports WAF attachment |
-| **CloudFront + Kong Cloud Gateway** | WAF attached to **CloudFront only** | Kong Cloud Gateway is external — WAF at CloudFront filters traffic before it reaches Kong. Kong plugins handle API-specific concerns (auth, rate limiting) downstream |
+AWS WAF is attached to **CloudFront** — it filters traffic at the edge before it reaches Kong. Kong plugins handle API-specific concerns downstream. They are **complementary**, not redundant:
 
-AWS WAF and Kong plugins remain **complementary**:
-- **WAF at CloudFront**: OWASP Top 10, bot detection, geo-blocking, IP reputation — stops malicious traffic at the edge
-- **Kong Plugins**: JWT/OAuth/OIDC authentication, per-consumer rate limiting, request transforms — handles API-specific policies requiring application context
+- **WAF at CloudFront**: OWASP Top 10, bot detection, geo-blocking, IP reputation — stops malicious traffic at the edge before it enters the VPC
+- **Kong Plugins**: JWT/OAuth/OIDC authentication, per-consumer rate limiting, request transforms — handles API-specific policies requiring application context (who is the consumer, which API, what plan)
 
 ### When to Use This Pattern
 
