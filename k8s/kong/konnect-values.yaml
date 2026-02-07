@@ -6,8 +6,8 @@
 #   - argocd/apps/02-kong-gateway.yaml   (data plane)
 #   - argocd/apps/02b-kong-controller.yaml (KIC + Konnect)
 #
-# Konnect Control Plane: Test-GW (AU region)
-# CP ID: 31c96ad8-651b-40b6-92e9-b9ab8dae1cdf
+# Konnect Control Plane: Test-GW-KIC (AU region, KIC type)
+# CP ID: 872b9828-1cd8-4f55-86f1-46059db954a3
 
 # ==============================================================================
 # DATA PLANE VALUES (02-kong-gateway.yaml)

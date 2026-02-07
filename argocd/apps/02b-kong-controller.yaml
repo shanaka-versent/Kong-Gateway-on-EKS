@@ -43,7 +43,7 @@ spec:
             publish_service: "kong/kong-gateway-kong-proxy"
           konnect:
             enabled: true
-            runtimeGroupID: "31c96ad8-651b-40b6-92e9-b9ab8dae1cdf"
+            runtimeGroupID: "872b9828-1cd8-4f55-86f1-46059db954a3"
             apiHostname: "au.kic.api.konghq.com"
             tlsClientCertSecretName: "kong-cluster-cert"
             license:
