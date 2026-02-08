@@ -1,7 +1,8 @@
 # cert-manager Certificate for Kong Gateway TLS
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
-# Issues a Let's Encrypt certificate for kong.esharps.co.nz via DNS-01 challenge.
+# Issues a Let's Encrypt certificate for the configured domain via DNS-01 challenge.
+# Update the dnsNames field below to match your domain_name in terraform/variables.tf
 # The certificate is stored in the 'kong-gateway-tls' secret — the same secret
 # referenced by the Kong Gateway resource (k8s/kong/gateway.yaml).
 #

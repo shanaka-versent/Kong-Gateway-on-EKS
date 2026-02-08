@@ -166,9 +166,9 @@ variable "cloudfront_custom_domain" {
 # ==============================================================================
 
 variable "domain_name" {
-  description = "Subdomain for Route53 hosted zone and Let's Encrypt certificate (e.g., kong.esharps.co.nz)"
+  description = "Subdomain for Route53 hosted zone and Let's Encrypt certificate (e.g., kong.mydomain.com)"
   type        = string
-  default     = "kong.esharps.co.nz"
+  default     = "kong.mydomain.com"
 }
 
 # ArgoCD Configuration

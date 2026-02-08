@@ -166,12 +166,12 @@ flowchart TB
         end
     end
 
-    Client -->|"TLS 1"| CDN
-    CDN --> PL
+    Client -->|"TLS 1 🔒"| CDN
+    CDN -->|"Decrypt 🔓 → Re-encrypt 🔒"| PL
     PL --> ILB
-    ILB -->|"TLS 2"| APIGW
-    APIGW --> GW
-    GW --> SVC
+    ILB -->|"TLS 2 🔒"| APIGW
+    APIGW -->|"Decrypt 🔓"| GW
+    GW -->|"Plain HTTP"| SVC
 ```
 
 | Layer | Responsibility | Cloud Agnostic |
@@ -198,13 +198,13 @@ flowchart TB
 
     subgraph Edge["CloudFront Edge"]
         direction LR
-        CF["CloudFront"]
+        CF["CloudFront<br/>🔓 Decrypt TLS 1<br/>🔒 Re-encrypt TLS 2"]
         WAF["AWS WAF"]
     end
 
     subgraph VPC["AWS VPC — Private Subnets Only"]
-        VPCOrigin["VPC Origin (PrivateLink)"]
-        NLB["Internal NLB (Terraform-managed)"]
+        VPCOrigin["VPC Origin (PrivateLink)<br/>🔒 Encrypted in transit"]
+        NLB["Internal NLB :443<br/>(TCP Passthrough — no decrypt)"]
 
         subgraph EKS["EKS Cluster"]
             TGB["TargetGroupBinding"]
@@ -213,7 +213,12 @@ flowchart TB
                 GWClass["GatewayClass: kong"]
                 GW["Gateway: kong-gateway<br/>Listener: HTTPS :443<br/>TLS: kong-gateway-tls"]
                 KIC["Kong Ingress Controller"]
-                KongDP["Kong Gateway Pods (x2)"]
+                KongDP["Kong Gateway Pods (x2)<br/>🔓 Decrypt TLS 2<br/>:8443 (Let's Encrypt cert)"]
+            end
+
+            subgraph CertNS["cert-manager namespace"]
+                CM["cert-manager"]
+                CI["ClusterIssuer:<br/>letsencrypt-production"]
             end
 
             subgraph API["api namespace"]
@@ -251,47 +256,58 @@ flowchart TB
         Portal["Dev Portal"]
     end
 
-    Client -->|"TLS 1 (ACM)"| CF
+    subgraph R53["AWS Route53"]
+        DNS["kong.mydomain.com<br/>(DNS-01 challenge)"]
+    end
+
+    Client -->|"🔒 TLS 1 (ACM cert)"| CF
     CF --> WAF
-    WAF --> VPCOrigin
+    WAF -->|"🔒 TLS 2 (Let's Encrypt cert)"| VPCOrigin
     VPCOrigin --> NLB
-    NLB -->|"TLS 2 (Kong Cert)"| TGB
+    NLB -->|"🔒 TLS passthrough :8443"| TGB
     TGB --> KongDP
 
     GWClass --> KIC
     GW --> KIC
     KIC -->|"configures"| KongDP
 
-    KongDP --> APIRoute
+    CM -->|"issues cert via DNS-01"| R53
+    CM -->|"kong-gateway-tls secret"| GW
+    CI --> CM
+
+    KongDP -->|"Plain HTTP :8080"| APIRoute
     APIRoute --> RL & RT & CORS
     RL & RT & CORS --> UsersAPI
 
-    KongDP --> App1Route
+    KongDP -->|"Plain HTTP :8080"| App1Route
     App1Route --> App1
 
-    KongDP --> App2Route
+    KongDP -->|"Plain HTTP :8080"| App2Route
     App2Route --> App2
 
-    KongDP --> HealthRoute
+    KongDP -->|"Plain HTTP :8080"| HealthRoute
     HealthRoute --> HealthPod
 
     KongDP -.-> Konnect
 
     style EKS fill:#f0f0f0
     style KongNS fill:#ffffff
+    style CertNS fill:#ffffff
     style API fill:#ffffff
     style TA1 fill:#ffffff
     style TA2 fill:#ffffff
     style GH fill:#ffffff
 ```
 
-**Traffic Flow:**
+**Traffic Flow (End-to-End Encryption):**
 ```
-Client → CloudFront + WAF (TLS) → VPC Origin → Internal NLB → Kong Gateway (TLS) → HTTPRoute → Backend Service
+Client ──🔒 TLS 1──→ CloudFront (Decrypt 🔓 + WAF + Re-encrypt 🔒) ──🔒 TLS 2──→ VPC Origin ──→ NLB :443 (passthrough) ──→ Kong :8443 (Decrypt 🔓) ──Plain HTTP──→ Backend :8080
 ```
 
 **Key Design Decisions:**
 - **Single traffic path** — all requests (web + API) flow through Kong Gateway, no split paths
+- **End-to-end TLS** — dual TLS termination (ACM at CloudFront, Let's Encrypt at Kong) with NLB TCP passthrough
+- **Automated certificates** — cert-manager handles Let's Encrypt issuance and renewal via DNS-01 challenge on Route53 (zero manual cert management)
 - **Namespace isolation** — each tenant and the API have their own namespace with ReferenceGrant for cross-namespace routing
 - **Plugins per-route** — only `/api/users` has rate limiting, request transforms, and CORS; tenant apps are clean pass-through
 - **Terraform-managed NLB** — created before Kong deploys (avoids chicken-and-egg with CloudFront VPC Origin)
@@ -301,7 +317,7 @@ Client → CloudFront + WAF (TLS) → VPC Origin → Internal NLB → Kong Gatew
 
 | Node Pool | Taint | Workloads |
 |-----------|-------|-----------|
-| System Nodes | CriticalAddonsOnly | ArgoCD, Kong components, AWS LB Controller |
+| System Nodes | CriticalAddonsOnly | ArgoCD, cert-manager, Kong components, AWS LB Controller |
 | User Nodes | None | Application workloads (app1, app2, users-api) |
 
 ---
@@ -318,17 +334,18 @@ sequenceDiagram
     participant Kong as Kong Gateway<br/>(kong namespace)
     participant App as Backend Service
 
-    Note over Client,CF: TLS Session 1 (Frontend)
-    Client->>+CF: HTTPS :443<br/>TLS with ACM Certificate
+    Note over Client,CF: 🔒 TLS Session 1 (ACM Certificate)
+    Client->>+CF: HTTPS :443 (Encrypted)
+    CF->>CF: 🔓 Decrypt TLS 1
     CF->>CF: WAF Rules (SQLi, XSS, Rate Limit)
-    CF->>CF: TLS Termination
 
-    Note over CF,Kong: TLS Session 2 (Backend)
-    CF->>+NLB: HTTPS :443<br/>Re-encrypted (VPC Origin)
-    NLB->>+Kong: HTTPS :8443<br/>TLS Passthrough
-    Kong->>Kong: TLS Termination<br/>(kong-gateway-tls secret)
+    Note over CF,Kong: 🔒 TLS Session 2 (Let's Encrypt Certificate)
+    CF->>CF: 🔒 Re-encrypt for origin
+    CF->>+NLB: HTTPS :443 via VPC Origin (Encrypted)
+    NLB->>+Kong: TCP Passthrough :8443 (No decrypt)
+    Kong->>Kong: 🔓 Decrypt TLS 2<br/>(kong-gateway-tls secret)
 
-    Note over Kong,App: Plain HTTP (Cluster-internal)
+    Note over Kong,App: Plain HTTP (Cluster-internal, unencrypted)
     alt /api/users - API Route (with plugins)
         Kong->>Kong: rate-limiting (100/min per IP)
         Kong->>Kong: request-transformer (add headers)
@@ -353,11 +370,13 @@ sequenceDiagram
 
 ### TLS Certificate Chain
 
-| Component | Certificate | Purpose |
-|-----------|-------------|---------|
-| **CloudFront Frontend** | ACM Certificate | Terminates client HTTPS, provides trusted public certificate |
-| **Kong Gateway Backend** | `kong-gateway-tls` Secret | Terminates re-encrypted traffic from CloudFront via NLB |
-| **Kong → Backend Pods** | Plain HTTP | Cluster-internal traffic on port 8080 |
+| Component | Certificate | Managed By | Purpose |
+|-----------|-------------|------------|---------|
+| **CloudFront Frontend** | ACM Certificate | AWS ACM (auto-renew) | Terminates client HTTPS, provides trusted public certificate |
+| **Kong Gateway Backend** | Let's Encrypt cert (`kong-gateway-tls` secret) | cert-manager (auto-renew every 60 days) | Terminates re-encrypted traffic from CloudFront via NLB |
+| **Kong → Backend Pods** | Plain HTTP | N/A | Cluster-internal traffic on port 8080 |
+
+> **Zero certificate maintenance:** Both certificates are fully automated. ACM auto-renews the CloudFront cert. cert-manager auto-renews the Let's Encrypt cert 30 days before its 90-day expiry. No manual certificate rotation required.
 
 ---
 
@@ -394,7 +413,7 @@ flowchart LR
 
 **Key resources in this project:**
 - **GatewayClass** (`k8s/kong/gateway-class.yaml`): Registers Kong as the Gateway API implementation
-- **Gateway** (`k8s/kong/gateway.yaml`): Creates the Kong Gateway instance listening on ports 80/443
+- **Gateway** (`k8s/kong/gateway.yaml`): Creates the Kong Gateway instance listening on HTTPS :443 with Let's Encrypt TLS (`kong-gateway-tls` secret)
 - **HTTPRoute** resources (`k8s/apps/*/httproute.yaml`): Define path-based routing rules
 
 > **Note:** This is the same Gateway API standard. If you've used Istio's Gateway API implementation, switching to Kong only requires changing the `gatewayClassName` — the HTTPRoute resources remain identical.
@@ -415,17 +434,17 @@ flowchart TB
 
     subgraph L2["Layer 2: Platform + Edge"]
         direction LR
-        EKS["EKS Cluster"] ~~~ IAM["IAM / IRSA"] ~~~ NLB["Internal NLB"] ~~~ CF["CloudFront + WAF"] ~~~ ArgoCD["ArgoCD"]
+        EKS["EKS Cluster"] ~~~ IAM["IAM / IRSA"] ~~~ NLB["Internal NLB"] ~~~ CF["CloudFront + WAF"] ~~~ R53["Route53"] ~~~ ArgoCD["ArgoCD"]
     end
 
     subgraph L3Pre["Layer 3 Pre-config"]
         direction LR
-        NS["kong Namespace"] ~~~ TLS["TLS Secret"] ~~~ HelmVals["Helm Values"]
+        NS["kong Namespace"] ~~~ HelmVals["Helm Values"] ~~~ KonnectCerts["Konnect mTLS Certs"]
     end
 
-    subgraph L3["Layer 3: Gateway"]
+    subgraph L3["Layer 3: Gateway + TLS"]
         direction LR
-        CRDs["Gateway API CRDs"] ~~~ KongGW["Kong Gateway Enterprise"] ~~~ GW["Gateway Resource"] ~~~ KPlugins["Kong Plugins"]
+        CRDs["Gateway API CRDs"] ~~~ CertMgr["cert-manager"] ~~~ KongGW["Kong Gateway Enterprise"] ~~~ GW["Gateway Resource"] ~~~ KPlugins["Kong Plugins"]
     end
 
     subgraph L4["Layer 4: Applications"]
@@ -442,9 +461,9 @@ flowchart TB
 | Layer | Tool | What It Creates |
 |-------|------|-----------------|
 | **Layer 1** | Terraform | VPC, Subnets (Public/Private), NAT/IGW, Route Tables |
-| **Layer 2** | Terraform | EKS, Node Groups, IAM (IRSA), LB Controller, Internal NLB (port 443), CloudFront + WAF + VPC Origin (https-only), ArgoCD |
-| **Layer 3 Pre-config** | kubectl + scripts | kong namespace, TLS certificates (CA + server cert via `01-generate-certs.sh`), `kong-gateway-tls` secret, konnect-client-tls secret, Helm values with Konnect endpoints |
-| **Layer 3** | ArgoCD | Gateway API CRDs, Kong Gateway Enterprise (ClusterIP), Gateway, HTTPRoutes, Kong Plugins |
+| **Layer 2** | Terraform | EKS, Node Groups, IAM (IRSA for LB Controller + cert-manager), LB Controller, Internal NLB (port 443), CloudFront + WAF + VPC Origin (https-only), Route53 hosted zone, ArgoCD |
+| **Layer 3 Pre-config** | kubectl + Konnect API | kong namespace, Konnect mTLS certificates (`konnect-client-tls` secret), Helm values with Konnect endpoints |
+| **Layer 3** | ArgoCD | Gateway API CRDs, cert-manager (Let's Encrypt via DNS-01), Kong Gateway Enterprise (ClusterIP), Gateway + auto-managed TLS (`kong-gateway-tls` secret), HTTPRoutes, Kong Plugins |
 | **Layer 4** | ArgoCD | Applications (app1, app2, users-api, health-responder) |
 
 ---
@@ -572,6 +591,7 @@ flowchart LR
 - kubectl
 - Helm 3.x
 - Kong Konnect account ([free trial](https://konghq.com/products/kong-konnect/register) or paid subscription)
+- A domain name you control (for end-to-end TLS with Let's Encrypt) — configure in `terraform/variables.tf` (`domain_name` variable, e.g., `kong.mydomain.com`)
 
 ## Deployment Steps
 
@@ -579,7 +599,8 @@ flowchart LR
 %%{init: {'theme': 'neutral'}}%%
 flowchart LR
     S1["1. Clone"] --> S2["2. Terraform\n(L1 & L2)"]
-    S2 --> S3["3. kubeconfig"]
+    S2 --> S2b["2b. DNS\nDelegation"]
+    S2b --> S3["3. kubeconfig"]
     S3 --> S4["4. Konnect Setup\n(L3 Pre-config)"]
     S4 --> S5["5. ArgoCD Deploy\n(L3 & L4)"]
     S5 --> S6["6. Verify"]
@@ -601,11 +622,29 @@ terraform init
 # Deploy without CloudFront (basic setup)
 terraform apply
 
-# OR deploy with CloudFront + WAF + VPC Origin (production-ready)
-terraform apply -var="enable_cloudfront=true"
+# OR deploy with CloudFront + WAF + VPC Origin + Route53 + cert-manager IRSA (production-ready)
+terraform apply -var="enable_cloudfront=true" -var="domain_name=kong.mydomain.com"
 ```
 
-> **Note:** When `enable_cloudfront=true`, Terraform creates the Internal NLB, CloudFront VPC Origin, and WAF. The VPC Origin can take 15+ minutes to deploy.
+> **Configure your domain:** Set `domain_name` in `terraform/variables.tf` (or pass via `-var`). This creates a Route53 hosted zone for your subdomain (e.g., `kong.mydomain.com`) used by cert-manager for Let's Encrypt DNS-01 validation and by CloudFront for TLS SNI matching.
+
+> **Note:** When `enable_cloudfront=true`, Terraform creates the Internal NLB, CloudFront VPC Origin, WAF, Route53 hosted zone, and cert-manager IRSA role. The VPC Origin can take 15+ minutes to deploy.
+
+**After `terraform apply`, configure DNS delegation:**
+
+If your parent domain (e.g., `mydomain.com`) is in a different AWS account or registrar:
+
+```bash
+# Get the NS records for your subdomain zone
+terraform output route53_name_servers
+
+# In the parent domain's DNS, create an NS record:
+#   Name:  kong.mydomain.com
+#   Type:  NS
+#   Value: <the 4 name servers from above>
+```
+
+This delegates DNS authority for `kong.mydomain.com` to this account, allowing cert-manager to create TXT records for Let's Encrypt validation.
 
 ### Step 3: Configure kubectl
 
@@ -616,9 +655,11 @@ $(terraform output -raw eks_get_credentials_command)
 ### Step 4: Configure Kong Konnect Integration (Layer 3 Pre-config)
 
 This step **must be completed before Step 5** (ArgoCD deployment). ArgoCD will deploy Kong Gateway Enterprise in Layer 3, and the Enterprise pods require:
-- The `kong` namespace with `konnect-client-tls` secret (Konnect mTLS) and `kong-gateway-tls` secret (end-to-end TLS)
+- The `kong` namespace with `konnect-client-tls` secret (Konnect mTLS authentication)
 - Helm values configured with the Konnect endpoints and Enterprise image
 - The mTLS certificate registered with your Konnect Control Plane
+
+> **Gateway TLS (end-to-end encryption)** is handled automatically by **cert-manager** in Layer 3 — no manual certificate generation required. cert-manager obtains a free Let's Encrypt certificate via DNS-01 challenge on Route53 and stores it as the `kong-gateway-tls` secret.
 
 Konnect automatically provisions the Enterprise license — no license file management required.
 
@@ -638,27 +679,19 @@ Konnect automatically provisions the Enterprise license — no license file mana
      -keyout ./tls.key -out ./tls.crt -days 365
    ```
 
-3. **Generate Gateway TLS Certificates (End-to-End TLS)**
-   ```bash
-   ./scripts/01-generate-certs.sh
-   ```
-
-4. **Create TLS Secrets in Kubernetes**
+3. **Create Konnect mTLS Secret in Kubernetes**
    ```bash
    kubectl create namespace kong
 
-   # Konnect mTLS secret
+   # Konnect mTLS secret (for data plane ↔ Konnect authentication)
    kubectl create secret tls konnect-client-tls -n kong \
      --cert=./tls.crt \
      --key=./tls.key
-
-   # Gateway TLS secret (for end-to-end encryption)
-   kubectl create secret tls kong-gateway-tls -n kong \
-     --cert=certs/server.crt \
-     --key=certs/server.key
    ```
 
-5. **Register Certificate with Konnect**
+   > **Note:** The `kong-gateway-tls` secret (for end-to-end TLS) is created automatically by cert-manager after ArgoCD deploys it in Step 5. No manual certificate generation needed.
+
+4. **Register Certificate with Konnect**
    ```bash
    # Set your Konnect variables
    export KONNECT_REGION="us"          # us, eu, au, me, in, sg
@@ -674,7 +707,7 @@ Konnect automatically provisions the Enterprise license — no license file mana
      --json "{\"cert\": \"$CERT\"}"
    ```
 
-6. **Update Helm Values**
+5. **Update Helm Values**
 
    Update `k8s/kong/konnect-values.yaml` with your Konnect endpoints:
    ```yaml
@@ -735,11 +768,14 @@ kubectl apply -f argocd/apps/root-app.yaml
 kubectl get applications -n argocd -w
 ```
 
-> **What ArgoCD deploys in order:**
-> 1. Gateway API CRDs
-> 2. Kong Gateway Enterprise (using `konnect-values.yaml` with the Enterprise image and Konnect config)
-> 3. GatewayClass + Gateway resources
-> 4. Application workloads (app1, app2, users-api, health-responder) with HTTPRoutes
+> **What ArgoCD deploys in order (sync waves):**
+> 1. **Wave -1:** cert-manager (Helm chart with IRSA for Route53 access)
+> 2. **Wave 0:** Gateway API CRDs + cert-manager config (ClusterIssuer + Certificate for Let's Encrypt)
+> 3. **Wave 1:** Kong Gateway Enterprise (using `konnect-values.yaml` with the Enterprise image and Konnect config)
+> 4. **Wave 1:** GatewayClass + Gateway resources (references `kong-gateway-tls` secret managed by cert-manager)
+> 5. **Wave 2:** Application workloads (app1, app2, users-api, health-responder) with HTTPRoutes
+>
+> cert-manager automatically obtains a Let's Encrypt certificate via DNS-01 challenge on Route53 and stores it as the `kong-gateway-tls` secret in the `kong` namespace. The Gateway resource references this secret for TLS termination.
 
 ### Step 6: Verify Deployment
 
@@ -886,16 +922,14 @@ If you don't have a Kong Konnect subscription and don't need Enterprise features
 
 ### OSS Deployment Steps
 
-**Skip the Konnect steps** in Step 4 (steps 1, 2, 5, 6) but **still create the Gateway TLS secret** for end-to-end encryption:
+**Skip the Konnect steps** in Step 4 entirely — cert-manager handles Gateway TLS automatically (same as Enterprise):
 
-1. **Generate Gateway TLS Certificates and create the secret**
+1. **Create the kong namespace**
    ```bash
-   ./scripts/01-generate-certs.sh
    kubectl create namespace kong
-   kubectl create secret tls kong-gateway-tls -n kong \
-     --cert=certs/server.crt \
-     --key=certs/server.key
    ```
+
+   > **Note:** The `kong-gateway-tls` secret is created automatically by cert-manager (deployed via ArgoCD). No manual certificate generation needed — cert-manager obtains a free Let's Encrypt certificate via DNS-01 challenge on Route53.
 
 2. **Use the OSS Helm values** (`k8s/kong/values.yaml` instead of `konnect-values.yaml`):
    ```yaml
@@ -915,7 +949,7 @@ If you don't have a Kong Konnect subscription and don't need Enterprise features
 
 3. **Update the ArgoCD app** (`argocd/apps/02-kong-gateway.yaml`) to reference `values.yaml` instead of `konnect-values.yaml`
 
-4. **Deploy Steps 1-3, then Step 5-6 directly** — ArgoCD will deploy Kong Gateway OSS without Konnect
+4. **Deploy Steps 1-3, then Step 5-6 directly** — ArgoCD will deploy Kong Gateway OSS with auto-managed Let's Encrypt TLS
 
 > **Note:** The Gateway API resources (GatewayClass, Gateway, HTTPRoute) work identically with both editions. Only the available plugin set and management capabilities differ.
 
@@ -1255,7 +1289,7 @@ Kong is deployed as a **split deployment** — two separate Helm releases:
 │  - Admin :8001 (ClusterIP, KIC only)            │
 └──────────┬──────────────────────────────────────┘
            ▼
-  CloudFront → VPC Origin → NLB :80 → Kong :8000
+  CloudFront → VPC Origin (HTTPS) → NLB :443 (passthrough) → Kong :8443
 ```
 
 ### Step 1: Set Environment Variables and Create Control Plane

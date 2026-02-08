@@ -6,7 +6,7 @@
 #
 # Deploys:
 # - ClusterIssuer resources for Let's Encrypt (staging + production)
-# - Certificate resource for kong.esharps.co.nz (stored as kong-gateway-tls secret)
+# - Certificate resource for the configured domain (stored as kong-gateway-tls secret)
 
 apiVersion: argoproj.io/v1alpha1
 kind: Application
