@@ -3,8 +3,7 @@
 #
 # DNS-01 challenge via Route53 (IRSA authentication)
 #
-# After terraform apply, replace <ROUTE53_ZONE_ID> below with:
-#   terraform output route53_zone_id
+# hostedZoneID value sourced from: terraform output route53_zone_id
 #
 # Two issuers provided:
 # - letsencrypt-staging: For testing (higher rate limits, untrusted certs)
@@ -25,7 +24,7 @@ spec:
       - dns01:
           route53:
             region: ap-southeast-2
-            hostedZoneID: "<ROUTE53_ZONE_ID>"
+            hostedZoneID: "Z01792521W5I4F72EEXNL"
         selector:
           dnsZones:
             - "kong.esharps.co.nz"
@@ -45,7 +44,7 @@ spec:
       - dns01:
           route53:
             region: ap-southeast-2
-            hostedZoneID: "<ROUTE53_ZONE_ID>"
+            hostedZoneID: "Z01792521W5I4F72EEXNL"
         selector:
           dnsZones:
             - "kong.esharps.co.nz"
