@@ -29,6 +29,8 @@ metadata:
   annotations:
     kubernetes.io/ingress.class: kong
 username: demo-user
+credentials:
+  - demo-user-jwt
 
 ---
 # JWT Credential (HMAC-SHA256) for demo-user
@@ -41,6 +43,7 @@ metadata:
   namespace: api
   labels:
     konghq.com/credential: jwt
+    konghq.com/consumer: demo-user
 stringData:
   algorithm: HS256
   key: demo-issuer
