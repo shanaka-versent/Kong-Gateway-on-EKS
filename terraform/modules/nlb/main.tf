@@ -15,7 +15,7 @@
 # (provided by AWS Load Balancer Controller).
 #
 # Traffic flow:
-# CloudFront --> VPC Origin (AWS backbone/HTTP) --> Internal NLB :80 --> Kong Pods :8000 (HTTP)
+# CloudFront --> VPC Origin (PrivateLink, AWS backbone) --> Internal NLB :80 (TCP) --> Kong Pods :8000 (HTTP)
 
 # ==============================================================================
 # SECURITY GROUP

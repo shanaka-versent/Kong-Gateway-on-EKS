@@ -1087,6 +1087,274 @@ terraform destroy
 
 > **Note:** Terraform includes a pre-destroy provisioner that automatically cleans up K8s LoadBalancer services before destroying the EKS cluster. This acts as a safety net even if you skip step 1-2, but the automated script is more thorough.
 
+<details>
+<summary><h2>Kong Konnect Setup via API (KIC Split Deployment)</h2></summary>
+
+The entire Kong Konnect integration can be configured remotely via the Konnect API — no UI interaction required after the initial one-time setup.
+
+### Prerequisites
+
+You only need **two things** from the Konnect UI (one-time setup). Everything else is generated during the process.
+
+| What You Need | Where to Get It | Purpose |
+|---------------|----------------|---------|
+| **Personal Access Token (PAT)** | Konnect UI → Profile → Personal Access Tokens → Generate Token | Authenticates all Konnect API calls |
+| **Region** | Determined when you created your Konnect account | Selects the correct API endpoint |
+
+> **How to generate a PAT:** Sign in to [cloud.konghq.com](https://cloud.konghq.com) → click your **profile icon** (top-right) → **Personal Access Tokens** → **Generate Token** → copy the `kpat_xxx...` value. The token is shown **only once** — store it securely.
+
+#### Konnect API Endpoints by Region
+
+| Region | Konnect API | KIC API Hostname (for Helm values) |
+|--------|------------|-----------------------------------|
+| US | `us.api.konghq.com` | `us.kic.api.konghq.com` |
+| EU | `eu.api.konghq.com` | `eu.kic.api.konghq.com` |
+| AU | `au.api.konghq.com` | `au.kic.api.konghq.com` |
+
+#### What Gets Generated During Setup
+
+| Detail | How It's Created | Step |
+|--------|-----------------|------|
+| **Control Plane ID** | Konnect API response (`POST /v2/control-planes`) | Step 1 |
+| **TLS Certificate + Key** | `openssl` command (locally generated) | Step 2 |
+| **Certificate Registration** | Konnect API (`POST .../dp-client-certificates`) | Step 3 |
+| **K8s Secret** (`kong-cluster-cert`) | `kubectl create secret tls` | Step 4 |
+
+#### What Gets Stored Where
+
+| Detail | Stored In | Committed to Git? |
+|--------|----------|-------------------|
+| PAT (`kpat_xxx...`) | Your password manager / vault | Never |
+| Control Plane ID | `argocd/apps/02b-kong-controller.yaml` (`runtimeGroupID`) | Yes |
+| KIC API Hostname | `argocd/apps/02b-kong-controller.yaml` (`apiHostname`) | Yes |
+| TLS Certificate + Key | K8s Secret `kong-cluster-cert` in `kong` namespace | Never |
+
+### Architecture
+
+Kong is deployed as a **split deployment** — two separate Helm releases:
+
+| Component | ArgoCD App | Helm Release | Purpose |
+|-----------|-----------|--------------|---------|
+| **Kong Gateway Data Plane** | `kong-gateway` | `kong-gateway` | Processes traffic (proxy on :8000/:8443, admin API on :8001) |
+| **Kong Ingress Controller (KIC)** | `kong-controller` | `kong-controller` | Watches Gateway API resources, pushes config to data plane, syncs to Konnect |
+
+```
+                    Konnect API (au.kic.api.konghq.com)
+                         ▲ config sync + license
+                         │
+┌─────────────────────────────────────────────────┐
+│  KIC (kong-controller)                          │
+│  - Watches: GatewayClass, Gateway, HTTPRoute    │
+│  - Auth: kong-cluster-cert TLS secret           │
+└──────────┬──────────────────────────────────────┘
+           │ POST /config via admin API (:8001)
+           ▼
+┌─────────────────────────────────────────────────┐
+│  Kong Gateway Data Plane (2 replicas)           │
+│  - Enterprise 3.9, DB-less                      │
+│  - Proxy :8000 (HTTP) / :8443 (TLS)            │
+│  - Admin :8001 (ClusterIP, KIC only)            │
+└──────────┬──────────────────────────────────────┘
+           ▼
+  CloudFront → VPC Origin → NLB :80 → Kong :8000
+```
+
+### Step 1: Set Environment Variables and Create Control Plane
+
+```bash
+# Set your Konnect credentials (from Prerequisites above)
+export KONNECT_REGION="au"          # us, eu, au, me, in, sg
+export KONNECT_TOKEN="kpat_xxx..."  # Personal Access Token from Konnect UI
+
+# Create a KIC-type Control Plane
+# IMPORTANT: cluster_type is IMMUTABLE — if created wrong, you must delete and recreate
+curl -s -X POST "https://${KONNECT_REGION}.api.konghq.com/v2/control-planes" \
+  -H "Authorization: Bearer ${KONNECT_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Test-GW-KIC",
+    "cluster_type": "CLUSTER_TYPE_K8S_INGRESS_CONTROLLER",
+    "auth_type": "pki_client_certs"
+  }'
+
+# Save the Control Plane ID from the response
+# Example response: { "id": "872b9828-1cd8-4f55-86f1-46059db954a3", ... }
+export CONTROL_PLANE_ID="<id-from-response>"
+```
+
+> **Why `CLUSTER_TYPE_K8S_INGRESS_CONTROLLER`?** A `CLUSTER_TYPE_CONTROL_PLANE` rejects KIC sync operations with `403: You can't perform this action on a non-KIC cluster`. The cluster type tells Konnect to expect configuration pushes from KIC rather than direct data plane connections.
+
+### Step 2: Generate TLS Client Certificates
+
+```bash
+# Generate an EC P-384 key pair (self-signed, 3-year validity)
+# This certificate is used by KIC to authenticate with the Konnect API
+openssl req -new -x509 -nodes \
+  -newkey ec:<(openssl ecparam -name secp384r1) \
+  -keyout /tmp/kic-tls.key \
+  -out /tmp/kic-tls.crt \
+  -days 1095 \
+  -subj "/CN=konnect-Test-GW-KIC"
+```
+
+### Step 3: Register the Certificate with Konnect
+
+```bash
+# Pin the certificate to the Control Plane — Konnect will only accept connections
+# from clients presenting this certificate
+CERT=$(cat /tmp/kic-tls.crt | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
+
+curl -s -X POST \
+  "https://${KONNECT_REGION}.api.konghq.com/v2/control-planes/${CONTROL_PLANE_ID}/dp-client-certificates" \
+  -H "Authorization: Bearer ${KONNECT_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{\"cert\": ${CERT}}"
+```
+
+### Step 4: Create the Kubernetes TLS Secret
+
+```bash
+# Create the namespace if it doesn't exist
+kubectl create namespace kong --dry-run=client -o yaml | kubectl apply -f -
+
+# Store the certificate and key as a K8s TLS secret
+# KIC reads this secret at runtime to authenticate with Konnect
+kubectl create secret tls kong-cluster-cert -n kong \
+  --cert=/tmp/kic-tls.crt \
+  --key=/tmp/kic-tls.key
+
+# Clean up temp files (cert/key now lives only in the K8s secret)
+rm -f /tmp/kic-tls.crt /tmp/kic-tls.key
+```
+
+### Step 5: Configure and Deploy Kong Gateway Data Plane
+
+File: `argocd/apps/02-kong-gateway.yaml`
+
+This deploys Kong Gateway Enterprise as a **standalone data plane** with no controller sidecar. Key decisions:
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| `ingressController.enabled` | `false` | KIC is deployed as a separate Helm release |
+| `admin.enabled` | `true` (ClusterIP) | KIC pushes config to the data plane via admin API |
+| `readinessProbe.path` | `/status` | Avoids chicken-and-egg: DB-less Kong without config returns 503 on `/status/ready`, preventing KIC from discovering pods |
+
+```yaml
+values: |
+  image:
+    repository: kong/kong-gateway
+    tag: "3.9"
+
+  ingressController:
+    enabled: false    # KIC is a separate Helm release
+
+  admin:
+    enabled: true     # KIC connects via admin API
+    type: ClusterIP
+    http:
+      enabled: true
+      containerPort: 8001
+
+  proxy:
+    enabled: true
+    type: ClusterIP
+    http:
+      enabled: true
+      containerPort: 8000
+      servicePort: 80
+    tls:
+      enabled: true
+      containerPort: 8443
+      servicePort: 443
+
+  readinessProbe:
+    httpGet:
+      path: /status    # NOT /status/ready (503 without config in DB-less mode)
+      port: status
+      scheme: HTTP
+
+  replicaCount: 2
+```
+
+### Step 6: Configure and Deploy KIC with Konnect Integration
+
+File: `argocd/apps/02b-kong-controller.yaml`
+
+This deploys KIC as a **standalone controller** that watches Gateway API resources, pushes config to the data plane via admin API, and syncs everything to Konnect. Key decisions:
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| `deployment.kong.enabled` | `false` | No Kong proxy sidecar — data plane is separate |
+| `konnect.runtimeGroupID` | `<your-cp-id>` | Helm chart parameter name (not `controlPlaneID`) |
+| `konnect.apiHostname` | `au.kic.api.konghq.com` | Region-specific KIC API endpoint |
+| `konnect.license.enabled` | `true` | Auto-fetches Enterprise license from Konnect |
+| `publish_service` | `kong/kong-gateway-kong-proxy` | Must point to the **data plane's** proxy service, not KIC's |
+| `gatewayDiscovery.adminApiService` | `kong-gateway-kong-admin` | Discovers data plane pods via admin API service |
+
+```yaml
+values: |
+  deployment:
+    kong:
+      enabled: false       # No Kong proxy sidecar
+
+  ingressController:
+    enabled: true
+    installCRDs: false     # CRDs installed separately
+    env:
+      feature_gates: "GatewayAlpha=true"
+      publish_service: "kong/kong-gateway-kong-proxy"
+    konnect:
+      enabled: true
+      runtimeGroupID: "<your-control-plane-id>"    # from Step 1
+      apiHostname: "au.kic.api.konghq.com"         # from Prerequisites table
+      tlsClientCertSecretName: "kong-cluster-cert"  # from Step 4
+      license:
+        enabled: true
+    gatewayDiscovery:
+      enabled: true
+      adminApiService:
+        name: "kong-gateway-kong-admin"    # Data plane's admin service
+        namespace: "kong"
+```
+
+### Step 7: Verify
+
+```bash
+# 1. Check all pods are running (2x data plane + 1x KIC)
+kubectl get pods -n kong
+
+# 2. Check KIC is syncing config to data plane pods
+kubectl logs -n kong -l app.kubernetes.io/instance=kong-controller --tail=10 | grep "Successfully synced"
+# Expected: "Successfully synced configuration to Kong"
+
+# 3. Check Konnect sync is working
+kubectl logs -n kong -l app.kubernetes.io/instance=kong-controller --tail=10 | grep "Konnect"
+# Expected: "Successfully synced configuration to Konnect"
+
+# 4. Check nodes registered in Konnect via API
+curl -s "https://${KONNECT_REGION}.api.konghq.com/v2/control-planes/${CONTROL_PLANE_ID}/nodes" \
+  -H "Authorization: Bearer ${KONNECT_TOKEN}" | python3 -m json.tool
+# Expected: 3 nodes (1 ingress-controller + 2 kong-proxy)
+
+# 5. Verify Gateway API resources (zero classical Ingress resources)
+kubectl get gatewayclasses,gateways,httproutes -A
+kubectl get ingress -A   # Should return "No resources found"
+```
+
+### Troubleshooting
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `403: non-KIC cluster` | CP created as `CLUSTER_TYPE_CONTROL_PLANE` | Delete CP and recreate with `CLUSTER_TYPE_K8S_INGRESS_CONTROLLER` (type is immutable) |
+| `401: not authorized` | Certificate not registered with the CP, or wrong CP ID | Re-register cert via Step 3, or verify `runtimeGroupID` matches CP ID from Step 1 |
+| `role: data_plane` disables admin API | Kong in `data_plane` mode ignores admin API settings | Do **not** set `role: data_plane` when using KIC — KIC needs the admin API |
+| KIC CrashLoopBackOff on `:8444` | Data plane pods not Ready, admin API not in endpoints | Override readiness probe to `/status` instead of `/status/ready` |
+| `controlPlaneID` not recognized | Helm chart uses a different parameter name | Change to `runtimeGroupID` in Helm values |
+| `gatewayDiscovery` not found | Must be nested under `ingressController`, not at top level | Indent correctly under `ingressController:` |
+| KIC expects wrong proxy service | KIC defaults to `kong-controller-kong-proxy` | Set `publish_service: "kong/kong-gateway-kong-proxy"` in KIC env |
+
+</details>
+
 ## Related Projects
 
 - [EKS Istio Gateway API POC](https://github.com/shanaka-versent/EKS-Istio-GatewayAPI-Deom/tree/k8s-gateway-api-poc) - Implementation 2: Istio + AWS API Gateway
