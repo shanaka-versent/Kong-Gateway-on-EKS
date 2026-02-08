@@ -527,9 +527,9 @@ Konnect automatically provisions the Enterprise license — no license file mana
 
 1. **Create a Control Plane in Konnect**
    - Sign in to [cloud.konghq.com](https://cloud.konghq.com)
-   - In the left sidebar, click **API Gateway**
-   - Click **+ New Control Plane** → choose **Kong Ingress Controller**
-   - Name it (e.g., `eks-demo`) and save
+   - In the left sidebar, click **Gateway Manager**
+   - Click **[+ New Control Plane](https://cloud.konghq.com/gateway-manager/create-gateway)** → select **Kong Ingress Controller** as the control plane type
+   - Name it (e.g., `eks-demo`) and click **Create**
    - Note the **Control Plane ID** from the overview page
 
 2. **Generate Konnect mTLS Certificates**
@@ -664,7 +664,7 @@ kubectl get httproutes -A
 
 1. **Check Data Plane Status in Konnect UI**
    - Go to Kong Konnect dashboard at [cloud.konghq.com](https://cloud.konghq.com)
-   - In the left sidebar, click **API Gateway**
+   - In the left sidebar, click **Gateway Manager**
    - Click on your Control Plane to open the Overview dashboard
    - Click **Data Plane Nodes** in the sidebar to see connected nodes
    - Your data plane node(s) should show status **"Connected"**
