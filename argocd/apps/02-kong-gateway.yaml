@@ -38,15 +38,24 @@ spec:
           enabled: false
 
         # DB-less mode — KIC pushes config via admin API
-        # No Konnect env vars on data plane: for KIC-type control planes,
-        # KIC handles ALL Konnect communication (config sync + telemetry).
-        # Direct data plane → Konnect telemetry connections are not supported
-        # with CLUSTER_TYPE_K8S_INGRESS_CONTROLLER control planes.
+        # Telemetry: data plane sends traffic analytics directly to Konnect
+        # KIC handles config sync + node registration, but NOT traffic metrics.
         #
         # Do NOT set role=data_plane — it disables the admin API listener
         # which KIC needs for gateway discovery (gatewayDiscovery).
+        # Do NOT set konnect_mode or cluster_control_plane — KIC handles those.
         env:
           database: "off"
+          cluster_mtls: pki
+          cluster_telemetry_endpoint: "872b9828-1cd8-4f55-86f1-46059db954a3.au.tp0.konghq.com:443"
+          cluster_telemetry_server_name: "872b9828-1cd8-4f55-86f1-46059db954a3.au.tp0.konghq.com"
+          cluster_cert: /etc/secrets/kong-cluster-cert/tls.crt
+          cluster_cert_key: /etc/secrets/kong-cluster-cert/tls.key
+          lua_ssl_trusted_certificate: system
+
+        # Mount Konnect mTLS certificate for telemetry authentication
+        secretVolumes:
+          - kong-cluster-cert
 
         # Admin API enabled for KIC gateway discovery (ClusterIP only)
         admin:
