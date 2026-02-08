@@ -101,3 +101,8 @@ output "cert_manager_role_arn" {
   description = "cert-manager IAM role ARN for IRSA (use in ArgoCD cert-manager app)"
   value       = var.enable_cloudfront ? module.cert_manager_irsa[0].cert_manager_role_arn : null
 }
+
+output "domain_name" {
+  description = "Domain name configured for Route53 and Let's Encrypt certificate"
+  value       = var.domain_name
+}

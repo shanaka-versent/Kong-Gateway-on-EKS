@@ -347,6 +347,7 @@ sequenceDiagram
 
     Note over Kong,App: Plain HTTP (Cluster-internal, unencrypted)
     alt /api/users - API Route (with plugins)
+        Kong->>Kong: jwt-auth (verify Bearer token)
         Kong->>Kong: rate-limiting (100/min per IP)
         Kong->>Kong: request-transformer (add headers)
         Kong->>Kong: cors (browser access)
@@ -598,19 +599,25 @@ flowchart LR
 ```mermaid
 %%{init: {'theme': 'neutral'}}%%
 flowchart LR
-    S1["1. Clone"] --> S2["2. Terraform\n(L1 & L2)"]
-    S2 --> S2b["2b. DNS\nDelegation"]
-    S2b --> S3["3. kubeconfig"]
+    S1["1. Clone +\nConfigure"] --> S2["2. Terraform\n(L1 & L2)"]
+    S2 --> S3["3. Post-Terraform\nSetup (automated)"]
     S3 --> S4["4. Konnect Setup\n(L3 Pre-config)"]
     S4 --> S5["5. ArgoCD Deploy\n(L3 & L4)"]
-    S5 --> S6["6. Verify"]
+    S5 --> S6["6. Test"]
 ```
 
-### Step 1: Clone Repository
+### Step 1: Clone and Configure
 
 ```bash
 git clone https://github.com/shanaka-versent/EKS-Kong-GatewayAPI-Demo.git
 cd EKS-Kong-GatewayAPI-Demo
+```
+
+Set your domain in `terraform/variables.tf`:
+```hcl
+variable "domain_name" {
+  default = "kong.mydomain.com"  # ← Your subdomain for Let's Encrypt + CloudFront SNI
+}
 ```
 
 ### Step 2: Deploy Infrastructure (Layers 1 & 2)
@@ -619,95 +626,90 @@ cd EKS-Kong-GatewayAPI-Demo
 cd terraform
 terraform init
 
-# Deploy without CloudFront (basic setup)
-terraform apply
-
-# OR deploy with CloudFront + WAF + VPC Origin + Route53 + cert-manager IRSA (production-ready)
-terraform apply -var="enable_cloudfront=true" -var="domain_name=kong.mydomain.com"
+# Deploy with CloudFront + WAF + VPC Origin + Route53 + cert-manager IRSA
+terraform apply -var="enable_cloudfront=true"
 ```
 
-> **Configure your domain:** Set `domain_name` in `terraform/variables.tf` (or pass via `-var`). This creates a Route53 hosted zone for your subdomain (e.g., `kong.mydomain.com`) used by cert-manager for Let's Encrypt DNS-01 validation and by CloudFront for TLS SNI matching.
+This creates: VPC, EKS, Node Groups, IAM/IRSA, Internal NLB (:443), CloudFront + WAF + VPC Origin, Route53 hosted zone, cert-manager IRSA role, and ArgoCD.
 
-> **Note:** When `enable_cloudfront=true`, Terraform creates the Internal NLB, CloudFront VPC Origin, WAF, Route53 hosted zone, and cert-manager IRSA role. The VPC Origin can take 15+ minutes to deploy.
+> **Note:** The VPC Origin can take 15+ minutes to deploy.
 
-**After `terraform apply`, configure DNS delegation:**
+### Step 3: Post-Terraform Setup (Automated)
 
-If your parent domain (e.g., `mydomain.com`) is in a different AWS account or registrar:
+After `terraform apply`, run the setup script to inject Terraform outputs into the K8s and ArgoCD manifests:
 
 ```bash
-# Get the NS records for your subdomain zone
-terraform output route53_name_servers
+# Configure kubectl
+$(terraform output -raw eks_get_credentials_command)
 
-# In the parent domain's DNS, create an NS record:
+# Run post-terraform setup
+cd ..
+./scripts/03-post-terraform-setup.sh
+```
+
+This script automatically:
+- Reads `terraform output` values (Route53 zone ID, cert-manager IRSA role ARN, domain name)
+- Updates `k8s/cert-manager/cluster-issuer.yaml` with the correct Route53 zone ID and domain
+- Updates `k8s/cert-manager/certificate.yaml` with your domain name
+- Updates `argocd/apps/00b-cert-manager.yaml` with the cert-manager IRSA role ARN
+- Prints DNS delegation instructions
+
+> **Preview changes first:** Run `./scripts/03-post-terraform-setup.sh --dry-run` to see what would change without modifying files.
+
+**DNS Delegation (required for Let's Encrypt):**
+
+If your parent domain (e.g., `mydomain.com`) is in a different AWS account or registrar, the script will print the NS records. Create an NS record in the parent domain's DNS to delegate the subdomain:
+
+```bash
+# The setup script prints these, or get them manually:
+cd terraform && terraform output route53_name_servers
+
+# In the parent domain's DNS, create:
 #   Name:  kong.mydomain.com
 #   Type:  NS
 #   Value: <the 4 name servers from above>
-```
 
-This delegates DNS authority for `kong.mydomain.com` to this account, allowing cert-manager to create TXT records for Let's Encrypt validation.
-
-### Step 3: Configure kubectl
-
-```bash
-$(terraform output -raw eks_get_credentials_command)
+# Verify delegation (may take a few minutes to propagate):
+dig NS kong.mydomain.com
 ```
 
 ### Step 4: Configure Kong Konnect Integration (Layer 3 Pre-config)
 
-This step **must be completed before Step 5** (ArgoCD deployment). ArgoCD will deploy Kong Gateway Enterprise in Layer 3, and the Enterprise pods require:
-- The `kong` namespace with `konnect-client-tls` secret (Konnect mTLS authentication)
-- Helm values configured with the Konnect endpoints and Enterprise image
-- The mTLS certificate registered with your Konnect Control Plane
+This step **must be completed before Step 5**. ArgoCD will deploy Kong Gateway Enterprise, which requires the `konnect-client-tls` secret and Helm values configured with your Konnect endpoints.
 
-> **Gateway TLS (end-to-end encryption)** is handled automatically by **cert-manager** in Layer 3 — no manual certificate generation required. cert-manager obtains a free Let's Encrypt certificate via DNS-01 challenge on Route53 and stores it as the `kong-gateway-tls` secret.
-
-Konnect automatically provisions the Enterprise license — no license file management required.
+> **Gateway TLS (end-to-end encryption)** is handled automatically by **cert-manager** — no manual certificate generation required.
 
 > **Don't have a Konnect account?** See the [OSS alternative](#alternative-kong-gateway-oss-without-konnect) to deploy without Konnect.
 
 1. **Create a Control Plane in Konnect**
-   - Sign in to [cloud.konghq.com](https://cloud.konghq.com)
-   - In the left sidebar, click **Gateway Manager**
-   - Click **[+ New Control Plane](https://cloud.konghq.com/gateway-manager/create-gateway)** → select **Kong Ingress Controller** as the control plane type
-   - Name it (e.g., `eks-demo`) and click **Create**
-   - Note the **Control Plane ID** from the overview page
+   - Sign in to [cloud.konghq.com](https://cloud.konghq.com) → **Gateway Manager** → **[+ New Control Plane](https://cloud.konghq.com/gateway-manager/create-gateway)**
+   - Select **Kong Ingress Controller** as the control plane type
+   - Name it (e.g., `eks-demo`) → **Create** → note the **Control Plane ID**
 
-2. **Generate Konnect mTLS Certificates**
+2. **Generate and register mTLS certificates**
    ```bash
+   # Generate certificate
    openssl req -new -x509 -nodes -newkey rsa:2048 \
      -subj "/CN=kongdp/C=US" \
      -keyout ./tls.key -out ./tls.crt -days 365
-   ```
 
-3. **Create Konnect mTLS Secret in Kubernetes**
-   ```bash
+   # Create K8s namespace and secret
    kubectl create namespace kong
-
-   # Konnect mTLS secret (for data plane ↔ Konnect authentication)
    kubectl create secret tls konnect-client-tls -n kong \
-     --cert=./tls.crt \
-     --key=./tls.key
-   ```
+     --cert=./tls.crt --key=./tls.key
 
-   > **Note:** The `kong-gateway-tls` secret (for end-to-end TLS) is created automatically by cert-manager after ArgoCD deploys it in Step 5. No manual certificate generation needed.
-
-4. **Register Certificate with Konnect**
-   ```bash
-   # Set your Konnect variables
+   # Register certificate with Konnect
    export KONNECT_REGION="us"          # us, eu, au, me, in, sg
    export KONNECT_TOKEN="kpat_xxx..."  # Personal access token from Konnect
    export CONTROL_PLANE_ID="your-cp-id-here"
 
-   # Format certificate for API (remove newlines)
    CERT=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' tls.crt)
-
-   # Register the certificate with Konnect
    curl -X POST "https://${KONNECT_REGION}.api.konghq.com/v2/control-planes/${CONTROL_PLANE_ID}/dp-client-certificates" \
      -H "Authorization: Bearer $KONNECT_TOKEN" \
      --json "{\"cert\": \"$CERT\"}"
    ```
 
-5. **Update Helm Values**
+3. **Update Helm Values**
 
    Update `k8s/kong/konnect-values.yaml` with your Konnect endpoints:
    ```yaml
@@ -741,7 +743,8 @@ Konnect automatically provisions the Enterprise license — no license file mana
        - konnect-client-tls
    ```
 
-#### Konnect Configuration Parameters Reference
+<details>
+<summary>Konnect Configuration Parameters Reference</summary>
 
 | Parameter | Description | Example |
 |-----------|-------------|---------|
@@ -753,108 +756,86 @@ Konnect automatically provisions the Enterprise license — no license file mana
 | `cluster_cert` | Path to client certificate | `/etc/secrets/konnect-client-tls/tls.crt` |
 | `cluster_cert_key` | Path to client private key | `/etc/secrets/konnect-client-tls/tls.key` |
 
-### Step 5: Deploy Kong Gateway & Applications via ArgoCD (Layers 3 & 4)
+</details>
 
-ArgoCD now deploys Kong Gateway Enterprise (Layer 3) using the Konnect configuration from Step 4, followed by the application workloads (Layer 4).
+### Step 5: Deploy Kong Gateway & Applications via ArgoCD (Layers 3 & 4)
 
 ```bash
 # Get ArgoCD admin password
-terraform output -raw argocd_admin_password
+cd terraform && terraform output -raw argocd_admin_password && cd ..
 
-# Apply root application — this triggers Layer 3 (Kong Gateway) and Layer 4 (Apps)
+# Apply root application — triggers all layers via sync waves
 kubectl apply -f argocd/apps/root-app.yaml
 
-# Wait for all apps to sync
+# Watch deployment progress
 kubectl get applications -n argocd -w
 ```
 
-> **What ArgoCD deploys in order (sync waves):**
-> 1. **Wave -1:** cert-manager (Helm chart with IRSA for Route53 access)
-> 2. **Wave 0:** Gateway API CRDs + cert-manager config (ClusterIssuer + Certificate for Let's Encrypt)
-> 3. **Wave 1:** Kong Gateway Enterprise (using `konnect-values.yaml` with the Enterprise image and Konnect config)
-> 4. **Wave 1:** GatewayClass + Gateway resources (references `kong-gateway-tls` secret managed by cert-manager)
-> 5. **Wave 2:** Application workloads (app1, app2, users-api, health-responder) with HTTPRoutes
->
-> cert-manager automatically obtains a Let's Encrypt certificate via DNS-01 challenge on Route53 and stores it as the `kong-gateway-tls` secret in the `kong` namespace. The Gateway resource references this secret for TLS termination.
+**ArgoCD deploys in order (sync waves):**
 
-### Step 6: Verify Deployment
+| Wave | What's Deployed | Key Detail |
+|------|----------------|------------|
+| **-1** | cert-manager | Helm chart with IRSA for Route53 access |
+| **0** | Gateway API CRDs + cert-manager config | ClusterIssuer + Certificate for Let's Encrypt |
+| **1** | Kong Gateway + KIC + Gateway resources | Data plane + controller + `kong-gateway-tls` secret |
+| **2** | Application workloads | app1, app2, users-api (with JWT), health-responder |
 
-#### Verify Gateway API Resources
+> cert-manager automatically obtains a Let's Encrypt certificate via DNS-01 challenge on Route53 and stores it as the `kong-gateway-tls` secret. The Gateway resource references this secret for TLS termination — no manual certificate management required.
+
+### Step 6: Verify and Test
+
+#### Verify Resources
 
 ```bash
-# Verify Kong Gateway pods are running
+# Verify all pods are running
 kubectl get pods -n kong
 
-# Check GatewayClass status
-kubectl get gatewayclass kong -o yaml
+# Check Gateway API resources
+kubectl get gatewayclasses,gateways,httproutes -A
 
-# Check Gateway status
-kubectl get gateway kong-gateway -n kong -o yaml
+# Check cert-manager certificate status
+kubectl get certificate -n kong
+kubectl describe certificate kong-gateway-tls -n kong
 
-# Verify HTTPRoutes are working
-kubectl get httproutes -A
+# Verify Konnect connection
+kubectl logs -n kong -l app.kubernetes.io/instance=kong-controller --tail=10 | grep "Konnect"
 ```
 
-#### Verify Konnect Connection
-
-1. **Check Data Plane Status in Konnect UI**
-   - Go to Kong Konnect dashboard at [cloud.konghq.com](https://cloud.konghq.com)
-   - In the left sidebar, click **Gateway Manager**
-   - Click on your Control Plane to open the Overview dashboard
-   - Click **Data Plane Nodes** in the sidebar to see connected nodes
-   - Your data plane node(s) should show status **"Connected"**
-   - The Enterprise license is automatically applied — no manual license file needed
-   
-2. **Verify from Kubernetes**
-   ```bash
-   # Check Kong pod logs for successful Konnect connection
-   kubectl logs -n kong -l app.kubernetes.io/name=kong --tail=50 | grep -i konnect
-
-   # Verify pods are running with Enterprise image
-   kubectl get pods -n kong -o jsonpath='{.items[0].spec.containers[0].image}'
-   # Should show: kong/kong-gateway:3.9
-
-   # Check for any connection errors
-   kubectl logs -n kong -l app.kubernetes.io/name=kong | grep -i "error\|failed"
-   ```
-
-3. **Verify Enterprise Features**
-   - Analytics will start appearing in the Konnect dashboard within 1-2 minutes
-   - Enterprise plugins (OpenID Connect, OPA, Vault, etc.) are now available
-   - Configuration changes in Konnect UI sync to data planes within seconds
-
-## Testing
-
-### Test Endpoints
+#### Test All Routes
 
 ```bash
-# When CloudFront is enabled, use the CloudFront URL:
+# Get CloudFront URL
 CF_URL=$(cd terraform && terraform output -raw cloudfront_url)
 
-# Test App 1 (no plugins)
+# Test App 1 — pass-through, no plugins (expect 200)
 curl ${CF_URL}/app1
 
-# Test App 2 (no plugins)
+# Test App 2 — pass-through, no plugins (expect 200)
 curl ${CF_URL}/app2
 
-# Test Users API - without token (expect 401 Unauthorized)
+# Test Users API — without token (expect 401 Unauthorized)
 curl -i ${CF_URL}/api/users
 
-# Generate a JWT token for the demo-user consumer
+# Generate JWT token and test authenticated access (expect 200)
 TOKEN=$(./scripts/02-generate-jwt.sh | grep -A1 "^Token:" | tail -1)
-
-# Test Users API - with valid token (expect 200 OK)
 curl -H "Authorization: Bearer ${TOKEN}" ${CF_URL}/api/users
 
-# Test health endpoint
+# Test health endpoint (expect 200)
 curl ${CF_URL}/healthz/ready
+```
 
-# Verify NLB target health (Kong pods should be healthy)
+#### Verify Infrastructure Health
+
+```bash
+# NLB target health (Kong pods should be healthy)
 TG_ARN=$(cd terraform && terraform output -raw nlb_target_group_arn)
 aws elbv2 describe-target-health --target-group-arn ${TG_ARN}
 
-# Verify TargetGroupBinding
+# TargetGroupBinding
 kubectl get targetgroupbindings -n kong
+
+# ArgoCD sync status
+kubectl get applications -n argocd
 ```
 
 ### Access ArgoCD UI
@@ -863,7 +844,7 @@ kubectl get targetgroupbindings -n kong
 kubectl port-forward svc/argocd-server -n argocd 8080:443
 # Open https://localhost:8080
 # Username: admin
-# Password: terraform output -raw argocd_admin_password
+# Password: cd terraform && terraform output -raw argocd_admin_password
 ```
 
 ---
