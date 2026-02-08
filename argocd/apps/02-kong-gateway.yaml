@@ -39,6 +39,11 @@ spec:
 
         # Konnect telemetry: data plane sends analytics directly to Konnect
         # KIC handles config sync, but the data plane must report telemetry itself
+        #
+        # IMPORTANT: Do NOT set role=data_plane here — it disables the admin API
+        # listener, which KIC needs for gateway discovery (gatewayDiscovery).
+        # The telemetry connection works without role=data_plane as long as
+        # konnect_mode, cluster_telemetry_endpoint, and cluster_cert are set.
         env:
           konnect_mode: "on"
           vitals: "off"
@@ -50,7 +55,6 @@ spec:
           cluster_cert: /etc/secrets/kong-cluster-cert/tls.crt
           cluster_cert_key: /etc/secrets/kong-cluster-cert/tls.key
           lua_ssl_trusted_certificate: system
-          role: data_plane
           database: "off"
 
         # Mount Konnect mTLS certificate for telemetry authentication
