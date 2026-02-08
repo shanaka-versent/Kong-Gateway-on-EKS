@@ -87,7 +87,7 @@ Kong is deployed **inside the EKS cluster** using **"Kubernetes API server as so
 
 ---
 
-#### Option 2: Kong External to K8s — Centralised API Management (Separate Repo)
+#### Option 2: Kong External to K8s — Centralised API Management ([Covered in Appendix](#appendix-kong-as-an-external-api-management-layer) & Separate Repo)
 
 Kong is deployed **outside the EKS cluster** (on EC2/ECS or as a Kong Konnect Dedicated Cloud Gateway) using **"Konnect as source"**. This gives you the full Konnect management experience — UI-driven configuration, Dev Portal, analytics, decK, and Terraform — but Kong does not implement the Kubernetes Gateway API. A separate Gateway API implementation (e.g., Istio Gateway) handles K8s routing inside the cluster.
 
