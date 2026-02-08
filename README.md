@@ -198,13 +198,13 @@ flowchart TB
 
     subgraph Edge["CloudFront Edge"]
         direction LR
-        CF["CloudFront<br/>🔓 Decrypt TLS 1<br/>🔒 Re-encrypt TLS 2"]
-        WAF["AWS WAF"]
+        CF["CloudFront<br/>ACM Certificate<br/>━━━━━━━━━━━━━━━<br/>🔓 TLS Termination<br/>🔒 Re-encrypt to origin"]
+        WAF["AWS WAF<br/>SQLi · XSS · Rate Limit"]
     end
 
     subgraph VPC["AWS VPC — Private Subnets Only"]
-        VPCOrigin["VPC Origin (PrivateLink)<br/>🔒 Encrypted in transit"]
-        NLB["Internal NLB :443<br/>(TCP Passthrough — no decrypt)"]
+        VPCOrigin["VPC Origin<br/>(AWS PrivateLink)<br/>━━━━━━━━━━━━━━━<br/>🔒 Encrypted in transit"]
+        NLB["Internal NLB :443<br/>━━━━━━━━━━━━━━━<br/>TCP Passthrough<br/>(no TLS termination)"]
 
         subgraph EKS["EKS Cluster"]
             TGB["TargetGroupBinding"]
@@ -213,7 +213,7 @@ flowchart TB
                 GWClass["GatewayClass: kong"]
                 GW["Gateway: kong-gateway<br/>Listener: HTTPS :443<br/>TLS: kong-gateway-tls"]
                 KIC["Kong Ingress Controller"]
-                KongDP["Kong Gateway Pods (x2)<br/>🔓 Decrypt TLS 2<br/>:8443 (Let's Encrypt cert)"]
+                KongDP["Kong Gateway Pods (x2)<br/>Let's Encrypt Certificate<br/>━━━━━━━━━━━━━━━<br/>🔓 TLS Termination :8443<br/>(end of encrypted path)"]
             end
 
             subgraph CertNS["cert-manager namespace"]
@@ -260,11 +260,11 @@ flowchart TB
         DNS["kong.mydomain.com<br/>(DNS-01 challenge)"]
     end
 
-    Client -->|"🔒 TLS 1 (ACM cert)"| CF
+    Client -->|"🔒 HTTPS :443<br/>TLS Session 1"| CF
     CF --> WAF
-    WAF -->|"🔒 TLS 2 (Let's Encrypt cert)"| VPCOrigin
-    VPCOrigin --> NLB
-    NLB -->|"🔒 TLS passthrough :8443"| TGB
+    WAF -->|"🔒 HTTPS :443<br/>TLS Session 2 (re-encrypted)"| VPCOrigin
+    VPCOrigin -->|"🔒 Encrypted"| NLB
+    NLB -->|"🔒 TCP passthrough :8443<br/>(no termination)"| TGB
     TGB --> KongDP
 
     GWClass --> KIC
@@ -275,17 +275,17 @@ flowchart TB
     CM -->|"kong-gateway-tls secret"| GW
     CI --> CM
 
-    KongDP -->|"Plain HTTP :8080"| APIRoute
+    KongDP -->|"Plain HTTP :8080<br/>(unencrypted)"| APIRoute
     APIRoute --> RL & RT & CORS
     RL & RT & CORS --> UsersAPI
 
-    KongDP -->|"Plain HTTP :8080"| App1Route
+    KongDP -->|"Plain HTTP :8080<br/>(unencrypted)"| App1Route
     App1Route --> App1
 
-    KongDP -->|"Plain HTTP :8080"| App2Route
+    KongDP -->|"Plain HTTP :8080<br/>(unencrypted)"| App2Route
     App2Route --> App2
 
-    KongDP -->|"Plain HTTP :8080"| HealthRoute
+    KongDP -->|"Plain HTTP :8080<br/>(unencrypted)"| HealthRoute
     HealthRoute --> HealthPod
 
     KongDP -.-> Konnect
