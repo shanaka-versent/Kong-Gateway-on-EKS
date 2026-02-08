@@ -632,9 +632,14 @@ terraform init
 terraform apply -var="enable_cloudfront=true"
 ```
 
-This creates: VPC, EKS, Node Groups, IAM/IRSA, Internal NLB (:443), CloudFront + WAF + VPC Origin, Route53 hosted zone, cert-manager IRSA role, and ArgoCD.
+<details>
+<summary>What does this create?</summary>
+
+VPC, EKS, Node Groups, IAM/IRSA, Internal NLB (:443), CloudFront + WAF + VPC Origin, Route53 hosted zone, cert-manager IRSA role, and ArgoCD.
 
 > **Note:** The VPC Origin can take 15+ minutes to deploy.
+
+</details>
 
 ### Step 3: Post-Terraform Setup (Automated)
 
@@ -649,6 +654,9 @@ cd ..
 ./scripts/03-post-terraform-setup.sh
 ```
 
+<details>
+<summary>What does this script do?</summary>
+
 This script automatically:
 - Reads `terraform output` values (Route53 zone ID, cert-manager IRSA role ARN, domain name)
 - Updates `k8s/cert-manager/cluster-issuer.yaml` with the correct Route53 zone ID and domain
@@ -658,7 +666,10 @@ This script automatically:
 
 > **Preview changes first:** Run `./scripts/03-post-terraform-setup.sh --dry-run` to see what would change without modifying files.
 
-**DNS Delegation (required for Let's Encrypt):**
+</details>
+
+<details>
+<summary>DNS Delegation (required for Let's Encrypt)</summary>
 
 If your parent domain (e.g., `mydomain.com`) is in a different AWS account or registrar, the script will print the NS records. Create an NS record in the parent domain's DNS to delegate the subdomain:
 
@@ -675,13 +686,22 @@ cd terraform && terraform output route53_name_servers
 dig NS kong.mydomain.com
 ```
 
+</details>
+
 ### Step 4: Configure Kong Konnect Integration (Layer 3 Pre-config)
 
-This step **must be completed before Step 5**. ArgoCD deploys Kong as a **split deployment** — the data plane and KIC controller are separate Helm releases, both connecting to Konnect independently. The only manual pre-requisite is creating the mTLS certificate secret that authenticates both components to Konnect.
+This step **must be completed before Step 5**. The only manual pre-requisite is creating the mTLS certificate secret that authenticates Kong components to Konnect.
+
+> **Don't have a Konnect account?** See the [OSS alternative](#alternative-kong-gateway-oss-without-konnect) to deploy without Konnect.
+
+<details>
+<summary>Why is this step needed?</summary>
+
+ArgoCD deploys Kong as a **split deployment** — the data plane and KIC controller are separate Helm releases, both connecting to Konnect independently.
 
 > **Gateway TLS (end-to-end encryption)** is handled automatically by **cert-manager** — no manual certificate generation required for proxy TLS. The certificate generated here is **only for Konnect mTLS authentication**.
 
-> **Don't have a Konnect account?** See the [OSS alternative](#alternative-kong-gateway-oss-without-konnect) to deploy without Konnect.
+</details>
 
 #### 4a. Create a Control Plane in Konnect
 
@@ -693,9 +713,12 @@ This step **must be completed before Step 5**. ArgoCD deploys Kong as a **split 
 
 #### 4b. Generate mTLS Certificate and Create K8s Secret
 
-Generate a self-signed certificate locally, register it with Konnect via API, and create the K8s secret. No interaction with the Konnect UI is needed beyond Step 4a.
+Generate a self-signed certificate locally, register it with Konnect via API, and create the K8s secret.
 
 > **Automation:** You can use `./scripts/setup-konnect.sh` to automate Steps 4b and print the endpoints for Step 4c. Set `KONNECT_REGION`, `KONNECT_TOKEN`, and `CONTROL_PLANE_ID` environment variables first.
+
+<details>
+<summary>Manual steps (if not using the automation script)</summary>
 
 ```bash
 # Generate self-signed mTLS certificate for Konnect authentication
@@ -719,6 +742,8 @@ kubectl create secret tls kong-cluster-cert -n kong \
   --cert=./tls.crt --key=./tls.key
 ```
 
+</details>
+
 #### 4c. Update ArgoCD App with Konnect Endpoints
 
 Update the KIC controller ArgoCD app with your Control Plane ID and region. Replace `<CP-ID>` with your Control Plane ID and `<REGION>` with your Konnect region code (e.g., `us`, `eu`, `au`):
@@ -733,7 +758,12 @@ ingressController:
     tlsClientCertSecretName: "kong-cluster-cert"
 ```
 
-> **Note:** Only the KIC controller connects to Konnect. For KIC-type control planes (`CLUSTER_TYPE_K8S_INGRESS_CONTROLLER`), KIC handles **all** Konnect communication — config sync, node registration, and telemetry. The data plane (`02-kong-gateway.yaml`) does not need any Konnect configuration; it only needs `database: "off"` for DB-less mode. See [Konnect Split Deployment Architecture](#konnect-split-deployment--telemetry-architecture) for details.
+<details>
+<summary>How does the Konnect connection work?</summary>
+
+Only the KIC controller connects to Konnect. For KIC-type control planes (`CLUSTER_TYPE_K8S_INGRESS_CONTROLLER`), KIC handles **all** Konnect communication — config sync, node registration, and telemetry. The data plane (`02-kong-gateway.yaml`) does not need any Konnect configuration; it only needs `database: "off"` for DB-less mode. See [Konnect Split Deployment Architecture](#konnect-split-deployment--telemetry-architecture) for details.
+
+</details>
 
 <details>
 <summary>Konnect Endpoint Reference</summary>
@@ -761,7 +791,8 @@ kubectl apply -f argocd/apps/root-app.yaml
 kubectl get applications -n argocd -w
 ```
 
-**ArgoCD deploys in order (sync waves):**
+<details>
+<summary>What does ArgoCD deploy? (sync wave order)</summary>
 
 | Wave | What's Deployed | Key Detail |
 |------|----------------|------------|
@@ -772,7 +803,10 @@ kubectl get applications -n argocd -w
 
 > cert-manager automatically obtains a Let's Encrypt certificate via DNS-01 challenge on Route53 and stores it as the `kong-gateway-tls` secret. The Gateway resource references this secret for TLS termination — no manual certificate management required.
 
-### Step 6: Verify and Test
+</details>
+
+<details>
+<summary><h3 style="display:inline">Step 6: Verify and Test</h3></summary>
 
 #### Verify Resources
 
@@ -828,6 +862,8 @@ kubectl get targetgroupbindings -n kong
 kubectl get applications -n argocd
 ```
 
+</details>
+
 ### Access ArgoCD UI
 
 ```bash
@@ -839,9 +875,69 @@ kubectl port-forward svc/argocd-server -n argocd 8080:443
 
 ---
 
-## Kong Konnect Platform Overview
+<details>
+<summary><h2 style="display:inline">Kong Konnect Platform Overview</h2></summary>
 
 Kong Konnect is a unified API platform that provides centralized management for APIs, LLMs, events, and microservices. It combines a cloud-hosted control plane with flexible data plane deployment options. **This demo uses Self-Hosted data planes on EKS.**
+
+```mermaid
+%%{init: {'theme': 'neutral', 'themeVariables': {'primaryColor': '#e0e0e0', 'primaryTextColor': '#333', 'primaryBorderColor': '#999', 'lineColor': '#666', 'secondaryColor': '#f5f5f5', 'tertiaryColor': '#fafafa', 'fontSize': '14px'}}}%%
+flowchart TB
+    subgraph Konnect["Kong Konnect SaaS — Cloud Control Plane"]
+        direction TB
+        subgraph Core["Core Platform"]
+            direction LR
+            GWMgmt["API Gateway<br/>Management"]
+            Analytics["Observability<br/>& Analytics"]
+            Portal["Developer<br/>Portal"]
+            Catalog["Service<br/>Catalog"]
+        end
+        subgraph Advanced["Advanced Capabilities"]
+            direction LR
+            Identity["Kong<br/>Identity"]
+            Metering["Metering<br/>& Billing"]
+            Debugger["Debugger<br/>& Tracing"]
+            AIGateway["AI<br/>Gateway"]
+        end
+        subgraph MgmtTools["Management Tools"]
+            direction LR
+            decK["decK<br/>(Declarative)"]
+            TF["Terraform<br/>Provider"]
+            KIC["Kong Ingress<br/>Controller"]
+            API["Konnect<br/>APIs"]
+        end
+    end
+
+    subgraph DataPlanes["Data Plane Hosting Options"]
+        direction LR
+        Dedicated["Dedicated Cloud<br/>Gateways<br/>(Managed by Kong)"]
+        Serverless["Serverless<br/>Gateways<br/>(Dev/Test)"]
+        SelfHosted["Self-Hosted<br/>(K8s / VMs)<br/>— This Demo"]
+    end
+
+    Konnect -->|"Config Sync +<br/>Telemetry (mTLS)"| DataPlanes
+
+    style Konnect fill:#e8e8e8,stroke:#999,color:#333
+    style Core fill:#d9d9d9,stroke:#888,color:#333
+    style Advanced fill:#d9d9d9,stroke:#888,color:#333
+    style MgmtTools fill:#d9d9d9,stroke:#888,color:#333
+    style DataPlanes fill:#f0f0f0,stroke:#999,color:#333
+    style Dedicated fill:#e0e0e0,stroke:#888,color:#333
+    style Serverless fill:#e0e0e0,stroke:#888,color:#333
+    style SelfHosted fill:#c8c8c8,stroke:#666,color:#333
+    style GWMgmt fill:#f5f5f5,stroke:#aaa,color:#333
+    style Analytics fill:#f5f5f5,stroke:#aaa,color:#333
+    style Portal fill:#f5f5f5,stroke:#aaa,color:#333
+    style Catalog fill:#f5f5f5,stroke:#aaa,color:#333
+    style Identity fill:#f5f5f5,stroke:#aaa,color:#333
+    style Metering fill:#f5f5f5,stroke:#aaa,color:#333
+    style Debugger fill:#f5f5f5,stroke:#aaa,color:#333
+    style AIGateway fill:#f5f5f5,stroke:#aaa,color:#333
+    style decK fill:#f5f5f5,stroke:#aaa,color:#333
+    style TF fill:#f5f5f5,stroke:#aaa,color:#333
+    style KIC fill:#f5f5f5,stroke:#aaa,color:#333
+    style API fill:#f5f5f5,stroke:#aaa,color:#333
+```
 
 | Capability | Description |
 |------------|-------------|
@@ -928,9 +1024,12 @@ env:
   # No Konnect env vars needed — KIC handles all Konnect communication
 ```
 
+</details>
+
 ---
 
-## Alternative: Kong Gateway OSS (Without Konnect)
+<details>
+<summary><h2 style="display:inline">Alternative: Kong Gateway OSS (Without Konnect)</h2></summary>
 
 If you don't have a Kong Konnect subscription and don't need Enterprise features, you can deploy with the **open-source Kong Gateway** instead.
 
@@ -985,6 +1084,8 @@ If you don't have a Kong Konnect subscription and don't need Enterprise features
 3. **Deploy Steps 1-3, then Step 5-6 directly** — ArgoCD deploys Kong Gateway OSS with auto-managed Let's Encrypt TLS
 
 > **Note:** The Gateway API resources (GatewayClass, Gateway, HTTPRoute) work identically with both editions. Only the available plugin set, Konnect analytics, and management capabilities differ.
+
+</details>
 
 ---
 
