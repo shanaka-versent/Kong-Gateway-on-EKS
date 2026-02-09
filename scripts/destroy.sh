@@ -19,12 +19,14 @@
 # 2. Wait for all LoadBalancer services to be fully removed
 # 3. Clean up any orphaned NLBs/ENIs in the VPC (safety net)
 # 4. Run terraform destroy (handles CloudFront, NLB, EKS, VPC)
+# 5. Delete Konnect Control Plane (optional — requires KONNECT_TOKEN)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${SCRIPT_DIR}/.."
 TERRAFORM_DIR="${REPO_DIR}/terraform"
+KIC_APP_YAML="${REPO_DIR}/argocd/apps/02b-kong-controller.yaml"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -207,16 +209,88 @@ terraform_destroy() {
 }
 
 # ---------------------------------------------------------------------------
-# Step 6: Clean up local artifacts
+# Step 6: Delete Konnect Control Plane (optional)
+# ---------------------------------------------------------------------------
+cleanup_konnect() {
+    log "Step 6: Konnect Control Plane cleanup..."
+
+    # Extract Control Plane ID and region from ArgoCD app yaml
+    local cp_id=""
+    local api_hostname=""
+    local region=""
+
+    if [[ -f "$KIC_APP_YAML" ]]; then
+        cp_id=$(grep 'runtimeGroupID:' "$KIC_APP_YAML" | head -1 | sed 's/.*runtimeGroupID:[[:space:]]*//' | tr -d '"' | tr -d "'" || true)
+        api_hostname=$(grep 'apiHostname:' "$KIC_APP_YAML" | head -1 | sed 's/.*apiHostname:[[:space:]]*//' | tr -d '"' | tr -d "'" || true)
+        region=$(echo "$api_hostname" | cut -d'.' -f1 || true)
+    fi
+
+    if [[ -z "$cp_id" || -z "$region" ]]; then
+        warn "Could not extract Control Plane ID or region from $KIC_APP_YAML"
+        warn "To delete manually: Konnect dashboard → Gateway Manager → delete the control plane"
+        return
+    fi
+
+    log "  Control Plane ID: $cp_id"
+    log "  Region: $region"
+
+    # Check for KONNECT_TOKEN
+    if [[ -z "${KONNECT_TOKEN:-}" ]]; then
+        echo ""
+        warn "KONNECT_TOKEN not set. Skipping Konnect Control Plane deletion."
+        warn "To delete manually:"
+        warn "  Option 1: https://cloud.konghq.com → Gateway Manager → delete control plane"
+        warn "  Option 2: export KONNECT_TOKEN=\"kpat_xxx...\" and re-run, or:"
+        warn "    curl -X DELETE \"https://${region}.api.konghq.com/v2/control-planes/${cp_id}\" \\"
+        warn "      -H \"Authorization: Bearer \$KONNECT_TOKEN\""
+        return
+    fi
+
+    echo ""
+    read -rp "Delete Konnect Control Plane ${cp_id} in ${region} region? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        warn "Skipping Konnect Control Plane deletion."
+        return
+    fi
+
+    local http_code
+    http_code=$(curl -s -o /tmp/konnect-delete-response.json -w "%{http_code}" \
+        -X DELETE "https://${region}.api.konghq.com/v2/control-planes/${cp_id}" \
+        -H "Authorization: Bearer $KONNECT_TOKEN" 2>/dev/null || echo "000")
+
+    if [[ "$http_code" == "204" || "$http_code" == "200" ]]; then
+        log "  Konnect Control Plane deleted successfully."
+    elif [[ "$http_code" == "404" ]]; then
+        warn "  Control Plane not found (already deleted?)."
+    elif [[ "$http_code" == "401" ]]; then
+        error "  Authentication failed (HTTP 401). Check your KONNECT_TOKEN."
+        warn "  Delete manually: https://cloud.konghq.com → Gateway Manager"
+    else
+        error "  Failed to delete Control Plane (HTTP $http_code)"
+        error "  Response: $(cat /tmp/konnect-delete-response.json 2>/dev/null || echo 'no response')"
+        warn "  Delete manually: https://cloud.konghq.com → Gateway Manager"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Step 7: Clean up local artifacts
 # ---------------------------------------------------------------------------
 cleanup_local() {
-    log "Step 6: Cleaning up local artifacts..."
+    log "Step 7: Cleaning up local artifacts..."
 
     # Clean up generated certificates
     if [[ -d "${REPO_DIR}/certs" ]]; then
         rm -rf "${REPO_DIR}/certs"
         log "Removed certs/ directory."
     fi
+
+    # Clean up loose cert files from setup-konnect.sh
+    for f in "${REPO_DIR}/tls.crt" "${REPO_DIR}/tls.key"; do
+        if [[ -f "$f" ]]; then
+            rm -f "$f"
+            log "Removed $(basename "$f")"
+        fi
+    done
 
     log "Local cleanup complete."
 }
@@ -244,6 +318,7 @@ main() {
     fi
 
     terraform_destroy
+    cleanup_konnect
     cleanup_local
 
     echo ""
