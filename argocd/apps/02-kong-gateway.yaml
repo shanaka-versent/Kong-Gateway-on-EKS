@@ -41,13 +41,14 @@ spec:
         # Telemetry: data plane sends traffic analytics directly to Konnect
         # KIC handles config sync + node registration, but NOT traffic metrics.
         #
-        # IMPORTANT: role=data_plane CANNOT be used here because it forcefully
-        # disables admin API (admin_listen override does NOT work).
-        # KIC needs admin API for gateway discovery + config push.
-        # Telemetry config is set WITHOUT role=data_plane — using correct
-        # Konnect endpoints from API (702eee73f2 prefix).
+        # konnect_mode=on activates Konnect telemetry WITHOUT role=data_plane.
+        # role=data_plane CANNOT be used — it forcefully disables admin API
+        # which KIC needs for gateway discovery + config push.
+        # Endpoints retrieved from Konnect API (702eee73f2 prefix).
         env:
           database: "off"
+          konnect_mode: "on"
+          vitals: "off"
           cluster_mtls: pki
           cluster_telemetry_endpoint: "702eee73f2.au.tp0.konghq.com:443"
           cluster_telemetry_server_name: "702eee73f2.au.tp0.konghq.com"
