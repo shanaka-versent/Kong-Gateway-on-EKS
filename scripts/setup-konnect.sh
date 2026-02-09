@@ -3,7 +3,9 @@
 # @author Shanaka Jayasundera - shanakaj@gmail.com
 #
 # Generates a self-signed mTLS certificate, registers it with Konnect via API,
-# and creates the K8s secret used by both the data plane and KIC controller.
+# and creates the K8s secret used by the KIC controller for Konnect authentication.
+# NOTE: The certificate is used by KIC ONLY — the data plane does NOT connect
+# to Konnect directly (see Konnect analytics limitation in README).
 #
 # This script replaces any manual Konnect UI certificate download workflow.
 # All interaction with Konnect is via API — no UI steps required beyond
@@ -141,7 +143,12 @@ show_next_steps() {
     echo ""
     echo "  Note: Only the KIC controller connects to Konnect."
     echo "  The data plane (02-kong-gateway.yaml) does NOT need any Konnect config."
-    echo "  KIC handles all config sync, node registration, and telemetry."
+    echo "  KIC handles config sync, node registration, and license fetch."
+    echo ""
+    echo "  LIMITATION: Native Konnect analytics is NOT available with KIC +"
+    echo "  Gateway Discovery pattern (role=data_plane disables admin API)."
+    echo "  Use the Prometheus plugin (k8s/kong/prometheus-plugin.yaml) for"
+    echo "  API observability instead."
     echo ""
     echo "Deploy via ArgoCD:"
     echo "   kubectl apply -f argocd/apps/root-app.yaml"

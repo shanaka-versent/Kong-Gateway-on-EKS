@@ -1,0 +1,28 @@
+# Global Prometheus Metrics Plugin
+# @author Shanaka Jayasundera - shanakaj@gmail.com
+#
+# Enables Prometheus metrics collection on ALL routes globally.
+# Metrics are exposed on Kong's status endpoint (:8100/metrics).
+#
+# This provides API observability (request counts, latency histograms,
+# status codes, bandwidth) as an alternative to Konnect Analytics,
+# which is unavailable in the KIC + Gateway Discovery pattern.
+#
+# Scrape target: kong-gateway-kong-status:8100/metrics
+
+apiVersion: configuration.konghq.com/v1
+kind: KongClusterPlugin
+metadata:
+  name: prometheus-metrics
+  annotations:
+    kubernetes.io/ingress.class: kong
+  labels:
+    global: "true"
+spec:
+  plugin: prometheus
+  config:
+    status_code_metrics: true
+    latency_metrics: true
+    bandwidth_metrics: true
+    upstream_health_metrics: true
+    per_consumer: true

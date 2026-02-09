@@ -10,12 +10,19 @@
 #
 # IMPORTANT: For KIC-type control planes (CLUSTER_TYPE_K8S_INGRESS_CONTROLLER),
 # KIC handles ALL Konnect communication — config sync, node registration, and
-# telemetry. The data plane does NOT connect to Konnect directly.
+# license fetch. The data plane does NOT connect to Konnect directly.
 #
-# Do NOT configure konnect_mode, cluster_telemetry_endpoint, cluster_control_plane,
-# or role=data_plane on the data plane. These cause:
-#   - 401 errors on telemetry (tp0.konghq.com rejects data plane certs for KIC CPs)
-#   - role=data_plane disables admin API, breaking KIC gateway discovery
+# KONNECT ANALYTICS LIMITATION (KIC + Gateway Discovery pattern):
+# Native Konnect analytics requires role=data_plane to activate the telemetry
+# subsystem. However, role=data_plane forcefully disables the admin API — even
+# with explicit admin_listen override — which breaks KIC gateway discovery.
+# This is a fundamental Kong architectural limitation. Tested and confirmed:
+#   - role=data_plane → admin API killed → KIC can't push config → routes fail
+#   - admin_listen override with role=data_plane → STILL disabled
+#   - konnect_mode=on without role=data_plane → telemetry subsystem NOT activated
+#
+# API observability is provided via the Prometheus plugin instead
+# (see k8s/kong/prometheus-plugin.yaml for global metrics collection).
 
 # ==============================================================================
 # DATA PLANE VALUES (argocd/apps/02-kong-gateway.yaml)
@@ -99,8 +106,10 @@ replicaCount: 2
 # and KongPlugin/KongConsumer CRDs, then:
 #   1. Pushes config to Kong data plane via admin API (gatewayDiscovery)
 #   2. Syncs config to Konnect (routes, plugins, consumers, node registration)
-#   3. Reports analytics/telemetry to Konnect
-#   4. Fetches Enterprise license from Konnect
+#   3. Fetches Enterprise license from Konnect
+#   Note: KIC does NOT send traffic analytics to Konnect. Native Konnect
+#   analytics require role=data_plane on the proxy, which is incompatible
+#   with the gateway discovery pattern. Use Prometheus plugin instead.
 #
 # KIC is the ONLY component that connects to Konnect for KIC-type CPs.
 

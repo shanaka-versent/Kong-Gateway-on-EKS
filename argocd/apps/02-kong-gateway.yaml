@@ -38,27 +38,18 @@ spec:
           enabled: false
 
         # DB-less mode — KIC pushes config via admin API
-        # Telemetry: data plane sends traffic analytics directly to Konnect
-        # KIC handles config sync + node registration, but NOT traffic metrics.
+        # KIC handles ALL Konnect communication: config sync, node registration,
+        # and license fetch via <region>.kic.api.konghq.com.
         #
-        # konnect_mode=on activates Konnect telemetry WITHOUT role=data_plane.
-        # role=data_plane CANNOT be used — it forcefully disables admin API
-        # which KIC needs for gateway discovery + config push.
-        # Endpoints retrieved from Konnect API (702eee73f2 prefix).
+        # KONNECT ANALYTICS LIMITATION (KIC + Gateway Discovery pattern):
+        # Native Konnect analytics requires role=data_plane to activate the
+        # telemetry subsystem. However, role=data_plane forcefully disables
+        # the admin API — even with explicit admin_listen override — which
+        # breaks KIC gateway discovery. This is a fundamental Kong limitation.
+        # API observability is provided via the Prometheus plugin instead
+        # (see k8s/kong/prometheus-plugin.yaml).
         env:
           database: "off"
-          konnect_mode: "on"
-          vitals: "off"
-          cluster_mtls: pki
-          cluster_telemetry_endpoint: "702eee73f2.au.tp0.konghq.com:443"
-          cluster_telemetry_server_name: "702eee73f2.au.tp0.konghq.com"
-          cluster_cert: /etc/secrets/kong-cluster-cert/tls.crt
-          cluster_cert_key: /etc/secrets/kong-cluster-cert/tls.key
-          lua_ssl_trusted_certificate: system
-
-        # Mount Konnect mTLS certificate for telemetry authentication
-        secretVolumes:
-          - kong-cluster-cert
 
         # Admin API enabled for KIC gateway discovery (ClusterIP only)
         admin:

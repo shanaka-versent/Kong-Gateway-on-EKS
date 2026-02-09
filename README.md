@@ -70,7 +70,7 @@ Kong is deployed **inside the EKS cluster** using **"Kubernetes API server as so
 - Single component for both Gateway API routing and API management
 - Full Kubernetes Gateway API compliance (`Gateway`, `HTTPRoute`, `GRPCRoute`)
 - All Kong plugins available (rate limiting, JWT, CORS, transforms, etc.) via KongPlugin CRDs
-- Konnect analytics and data plane monitoring (read-only)
+- API observability via Prometheus plugin (per-route request counts, latency, status codes)
 - GitOps-native configuration — everything is Kubernetes YAML
 
 **What you lose (due to Konnect being read-only):**
@@ -125,7 +125,7 @@ Kong is deployed **outside the EKS cluster** (on EC2/ECS or as a Kong Konnect De
 | **Konnect UI management** | ❌ Read-only | ✅ Full |
 | **Dev Portal** | ❌ | ✅ |
 | **decK / Terraform** | ❌ | ✅ |
-| **Analytics** | ✅ Read-only | ✅ Full |
+| **Analytics** | Via Prometheus plugin (see [limitation](#known-limitations)) | ✅ Full (Konnect native) |
 | **Components in cluster** | Kong only | Kong + Istio Gateway |
 | **Network hops** | 1 (Kong → backend) | 2 (Kong → Istio GW → backend) |
 | **Best for** | K8s-first, GitOps teams | Multi-platform, UI-driven teams |
@@ -253,7 +253,7 @@ flowchart TB
     subgraph Konnect["Kong Konnect SaaS"]
         direction LR
         ConfigSync["Config Sync<br/>(read-only)"]
-        Analytics["Traffic Analytics<br/>& Monitoring"]
+        License["Enterprise<br/>License"]
     end
 
     subgraph R53["AWS Route53"]
@@ -288,8 +288,8 @@ flowchart TB
     KongDP -->|"Plain HTTP :8080<br/>(unencrypted)"| HealthRoute
     HealthRoute --> HealthPod
 
-    KIC -.->|"config sync +<br/>telemetry (mTLS)"| ConfigSync
-    KIC -.->|"node registration<br/>+ analytics"| Analytics
+    KIC -.->|"config sync +<br/>node registration (mTLS)"| ConfigSync
+    KIC -.->|"license fetch"| Analytics
 
 ```
 
@@ -305,8 +305,9 @@ Client ──🔒 TLS 1──→ CloudFront (Decrypt 🔓 + WAF + Re-encrypt �
 - **Namespace isolation** — each tenant and the API have their own namespace with ReferenceGrant for cross-namespace routing
 - **Plugins per-route** — only `/api/users` has rate limiting, request transforms, and CORS; tenant apps are clean pass-through
 - **Terraform-managed NLB** — created before Kong deploys (avoids chicken-and-egg with CloudFront VPC Origin)
-- **Split deployment** — KIC (controller) and Kong Gateway (data plane) are separate Helm releases; KIC syncs config to Konnect, data plane sends traffic telemetry directly
-- **Kong Konnect** — analytics, monitoring, and config visibility via SaaS; admin API exposed only as ClusterIP for KIC gateway discovery
+- **Split deployment** — KIC (controller) and Kong Gateway (data plane) are separate Helm releases; KIC syncs config + nodes to Konnect
+- **Kong Konnect** — config visibility and licensing via SaaS; admin API exposed only as ClusterIP for KIC gateway discovery
+- **API observability** — Prometheus plugin provides per-route request counts, latency histograms, status codes, and bandwidth metrics (native Konnect analytics is unavailable with the KIC + Gateway Discovery pattern — see [Known Limitations](#known-limitations))
 
 ### Node Pool Layout
 
@@ -754,7 +755,7 @@ ingressController:
 <details>
 <summary>How does the Konnect connection work?</summary>
 
-Only the KIC controller connects to Konnect. For KIC-type control planes (`CLUSTER_TYPE_K8S_INGRESS_CONTROLLER`), KIC handles **all** Konnect communication — config sync, node registration, and telemetry. The data plane (`02-kong-gateway.yaml`) does not need any Konnect configuration; it only needs `database: "off"` for DB-less mode. See [Konnect Split Deployment Architecture](#konnect-split-deployment--telemetry-architecture) for details.
+Only the KIC controller connects to Konnect. For KIC-type control planes (`CLUSTER_TYPE_K8S_INGRESS_CONTROLLER`), KIC handles config sync, node registration, and license fetch. The data plane (`02-kong-gateway.yaml`) does not need any Konnect configuration; it only needs `database: "off"` for DB-less mode. Note: native Konnect analytics is not available with this pattern — see [Known Limitations](#known-limitations). See [Konnect Split Deployment Architecture](#konnect-split-deployment--telemetry-architecture) for details.
 
 </details>
 
@@ -962,7 +963,7 @@ flowchart TB
 
     subgraph Konnect["Konnect KIC API<br/>(region.kic.api.konghq.com)"]
         direction LR
-        Sync["Route configuration<br/>Plugin definitions<br/>Consumer/credential mappings<br/>Gateway API resources<br/>Data plane node registration<br/>Traffic analytics & telemetry"]
+        Sync["Route configuration<br/>Plugin definitions<br/>Consumer/credential mappings<br/>Gateway API resources<br/>Data plane node registration<br/>Enterprise license"]
     end
 
     Traffic["CloudFront → NLB → :8443"] --> DPBox
@@ -977,10 +978,10 @@ For control planes created with `CLUSTER_TYPE_K8S_INGRESS_CONTROLLER`, KIC is th
 
 | Component | Konnect Connection | What It Does |
 |-----------|-------------------|--------------|
-| **KIC Controller** | `<region>.kic.api.konghq.com` (mTLS via `kong-cluster-cert`) | Config sync, node registration, telemetry, license |
+| **KIC Controller** | `<region>.kic.api.konghq.com` (mTLS via `kong-cluster-cert`) | Config sync, node registration, license fetch |
 | **Data Plane** | **None** — receives config from KIC via admin API | Proxies traffic, executes plugins, TLS termination |
 
-> **Important:** Do **not** configure `cluster_telemetry_endpoint`, `cluster_control_plane`, `konnect_mode`, or `role: data_plane` on the data plane for KIC-type control planes. These settings cause: (1) 401 errors on telemetry — the `tp0.konghq.com` endpoint does not accept data plane connections for KIC control planes; (2) `role: data_plane` disables the admin API listener, breaking KIC gateway discovery.
+> **Important:** Do **not** configure `cluster_telemetry_endpoint`, `cluster_control_plane`, `konnect_mode`, or `role: data_plane` on the data plane. `role: data_plane` disables the admin API listener (even with explicit `admin_listen` override), breaking KIC gateway discovery. Without `role: data_plane`, all other Konnect env vars are ignored. See [Known Limitations](#known-limitations).
 
 **Data plane configuration (minimal):**
 
@@ -1475,7 +1476,9 @@ values: |
 
   # DB-less mode — KIC pushes config via admin API
   # No Konnect env vars on data plane: for KIC-type control planes,
-  # KIC handles ALL Konnect communication (config sync + telemetry)
+  # KIC handles config sync + node registration + license fetch.
+  # Native Konnect analytics is not available with this pattern
+  # (role=data_plane disables admin API). Use Prometheus plugin instead.
   env:
     database: "off"
 
@@ -1579,13 +1582,91 @@ kubectl get ingress -A   # Should return "No resources found"
 | `403: non-KIC cluster` | CP created as `CLUSTER_TYPE_CONTROL_PLANE` | Delete CP and recreate with `CLUSTER_TYPE_K8S_INGRESS_CONTROLLER` (type is immutable) |
 | `401: not authorized` | Certificate not registered with the CP, or wrong CP ID | Re-register cert via Step 3, or verify `runtimeGroupID` matches CP ID from Step 1 |
 | `role: data_plane` disables admin API | `role: data_plane` causes Kong to ignore `admin.enabled: true` — admin API stops listening on :8001/:8444 | Do NOT set `role: data_plane` on the data plane when using KIC split deployment. For KIC-type CPs, data plane does not need any Konnect env vars |
-| 401 on telemetry endpoint | Data plane connecting to `tp0.konghq.com` directly — not supported for KIC-type control planes | Remove `cluster_telemetry_endpoint`, `konnect_mode`, and all `cluster_*` env vars from data plane. KIC handles all Konnect communication |
+| Konnect Analytics shows 0 requests | Native Konnect analytics requires `role: data_plane` which disables admin API — incompatible with KIC gateway discovery | Use the Prometheus plugin for API observability instead. See [Known Limitations](#known-limitations) |
+| 401 on telemetry endpoint (tp0) | Data plane connecting to `tp0.konghq.com` directly — telemetry subsystem only activates with `role: data_plane` | Remove all `cluster_*` and `konnect_mode` env vars from data plane. Use Prometheus plugin for metrics |
 | KIC CrashLoopBackOff on `:8444` | Data plane pods not Ready, admin API not in endpoints | Override readiness probe to `/status` instead of `/status/ready` |
 | `controlPlaneID` not recognized | Helm chart uses a different parameter name | Change to `runtimeGroupID` in Helm values |
 | `gatewayDiscovery` not found | Must be nested under `ingressController`, not at top level | Indent correctly under `ingressController:` |
 | KIC expects wrong proxy service | KIC defaults to `kong-controller-kong-proxy` | Set `publish_service: "kong/kong-gateway-kong-proxy"` in KIC env |
 
 </details>
+
+## API Observability
+
+This project uses the **Kong Prometheus plugin** for API observability. The plugin is deployed globally via `KongClusterPlugin` and captures metrics on all routes automatically.
+
+### Available Metrics
+
+| Metric | Description |
+|--------|-------------|
+| `kong_http_requests_total` | Total request count by service, route, status code, consumer |
+| `kong_request_latency_ms_bucket` | Request latency histogram (Kong processing time) |
+| `kong_upstream_latency_ms_bucket` | Upstream latency histogram (backend response time) |
+| `kong_bandwidth_bytes` | Bandwidth by direction (ingress/egress), service, route |
+| `kong_upstream_target_health` | Upstream target health status |
+
+### Accessing Metrics
+
+```bash
+# Port-forward to a Kong pod and scrape metrics
+kubectl exec -n kong <kong-gateway-pod> -c proxy -- curl -s localhost:8100/metrics | grep kong_http_requests_total
+
+# Or via the status service
+kubectl port-forward svc/kong-gateway-kong-status -n kong 8100:8100
+curl localhost:8100/metrics
+```
+
+### Integration with Prometheus + Grafana
+
+For production use, deploy a Prometheus stack to scrape Kong metrics:
+
+```yaml
+# ServiceMonitor for Prometheus Operator
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kong-gateway
+  namespace: kong
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: kong-gateway
+  endpoints:
+    - port: status
+      path: /metrics
+      interval: 15s
+```
+
+> **Why Prometheus instead of Konnect Analytics?** See [Known Limitations](#known-limitations).
+
+---
+
+## Known Limitations
+
+### Konnect Analytics Not Available with KIC + Gateway Discovery
+
+**Limitation:** Native Konnect Analytics (traffic metrics, request counts, latency in the Konnect dashboard) is **not available** when using the KIC + Gateway Discovery (split deployment) pattern.
+
+**Root cause:** Kong's telemetry subsystem — which sends traffic metrics to Konnect — only activates when `role: data_plane` is set. However, `role: data_plane` **forcefully disables the admin API** (ports 8001/8444 stop listening), even when `admin_listen` is explicitly overridden. KIC requires admin API for gateway discovery and config push via `POST /config`.
+
+**What was tested and confirmed:**
+
+| Configuration | Admin API | Telemetry Active | Routes Work |
+|--------------|----------|-----------------|-------------|
+| `role: data_plane` + `admin_listen` override | Disabled | Yes | No (KIC can't push config) |
+| `konnect_mode: on` (no role) | Works | No (no outgoing connections) | Yes |
+| No Konnect config | Works | No | Yes |
+
+**What still works with Konnect:**
+- Config visibility — routes, plugins, consumers visible in Konnect UI (read-only)
+- Node registration — data plane pods appear as nodes in Konnect
+- License management — Enterprise license auto-fetched via KIC
+
+**Workaround:** Use the Prometheus plugin for API observability (see [API Observability](#api-observability)).
+
+**Future:** This limitation may be resolved when Kong adds support for telemetry without `role: data_plane`, or when Konnect natively supports analytics collection through the KIC API channel.
+
+---
 
 ## Related Projects
 
